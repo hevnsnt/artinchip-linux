@@ -31,5 +31,6 @@ video:
 image: ""
 
 # Global settings
-quality: 80       # JPEG quality 1-100 (0 = auto per mode)
-fps: 24           # target framerate for video/url modes
+quality: 80            # JPEG quality 1-100 (0 = auto per mode)
+fps: 24                # target framerate for video/url modes
+rotate_display: 0      # rotate output: 0, 90, 180, or 270 degrees

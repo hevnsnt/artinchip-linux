@@ -165,10 +165,11 @@ def send_frame(dev, jpeg_data, media_format, frame_id):
 class Display:
     """Manages USB device lifecycle with auto-reconnect."""
 
-    def __init__(self):
+    def __init__(self, rotate=0):
         self.dev = None
         self.w = self.h = self.fmt = self.fps = 0
         self.frame_id = 0
+        self.rotate = rotate % 360  # 0, 90, 180, 270
 
     def connect(self):
         self.dev = find_device()
@@ -201,10 +202,26 @@ class Display:
                 log(f"Waiting for display... ({elapsed}s elapsed)")
             time.sleep(2)
 
+    @property
+    def render_w(self):
+        """Width that modes should render at (swapped if rotated 90/270)."""
+        return self.h if self.rotate in (90, 270) else self.w
+
+    @property
+    def render_h(self):
+        """Height that modes should render at (swapped if rotated 90/270)."""
+        return self.w if self.rotate in (90, 270) else self.h
+
     def send(self, jpeg_data):
-        """Send a JPEG frame. Returns False on USB error (caller should reconnect)."""
+        """Send a JPEG frame, applying rotation if set. Returns False on USB error."""
         if not self.dev:
             return False
+        # Apply rotation if needed
+        if self.rotate:
+            img = Image.open(io.BytesIO(jpeg_data))
+            # PIL rotates counter-clockwise, so negate for clockwise
+            img = img.rotate(-self.rotate, expand=True)
+            jpeg_data = image_to_jpeg(img, 85)
         try:
             send_frame(self.dev, jpeg_data, self.fmt, self.frame_id)
             self.frame_id += 1
@@ -651,10 +668,11 @@ def mode_single(disp, name, quality):
         return
     _init_mode(mod)
     interval = _mode_fps(name)
-    log(f"Mode '{name}' running ({1/interval:.0f}fps, quality={quality})")
+    rw, rh = disp.render_w, disp.render_h
+    log(f"Mode '{name}' running ({1/interval:.0f}fps, quality={quality}, {rw}x{rh})")
     try:
         while True:
-            img = mod.render_frame(disp.w, disp.h)
+            img = mod.render_frame(rw, rh)
             jpeg = image_to_jpeg(img, quality)
             if not disp.send(jpeg):
                 disp.wait_for_device()
@@ -664,6 +682,7 @@ def mode_single(disp, name, quality):
 
 def mode_rotate(disp, mode_names, delay, quality):
     """Rotate through multiple display modes, switching every `delay` seconds."""
+    rw, rh = disp.render_w, disp.render_h
     log(f"Rotating {len(mode_names)} modes every {delay}s: {', '.join(mode_names)}")
     while True:
         for name in mode_names:
@@ -676,7 +695,7 @@ def mode_rotate(disp, mode_names, delay, quality):
             t_end = time.monotonic() + delay
             try:
                 while time.monotonic() < t_end:
-                    img = mod.render_frame(disp.w, disp.h)
+                    img = mod.render_frame(rw, rh)
                     jpeg = image_to_jpeg(img, quality)
                     if not disp.send(jpeg):
                         disp.wait_for_device()
@@ -728,6 +747,7 @@ def load_config():
     mode = cfg.get('mode', 'sysmon')
     quality = cfg.get('quality', 0)
     fps = cfg.get('fps', 24)
+    rotate = cfg.get('rotate_display', 0)
     loop = False
     delay = 30
     show_modes = None
@@ -753,7 +773,7 @@ def load_config():
     elif mode in ALL_MODES:
         target = mode
 
-    return mode, target, quality, fps, delay, loop, show_modes
+    return mode, target, quality, fps, delay, loop, show_modes, rotate
 
 # ── Main ────────────────────────────────────────────────────────────
 def main():
@@ -799,6 +819,8 @@ def main():
 
     parser.add_argument('--delay', type=int, default=30,
                         help='Seconds per mode when using --show (default: 30)')
+    parser.add_argument('--rotate', type=int, default=0, choices=[0, 90, 180, 270],
+                        help='Rotate output (0, 90, 180, 270 degrees)')
     parser.add_argument('--fps', type=int, default=24, help='Framerate (default: 24)')
     parser.add_argument('-q', '--quality', type=int, default=0,
                         help='JPEG quality 1-100 (default: auto)')
@@ -867,13 +889,15 @@ def main():
     if mode is None:
         cfg = load_config()
         if cfg:
-            mode, target, cfg_quality, cfg_fps, cfg_delay, cfg_loop, cfg_show = cfg
+            mode, target, cfg_quality, cfg_fps, cfg_delay, cfg_loop, cfg_show, cfg_rotate = cfg
             if not args.quality:
                 args.quality = cfg_quality
             if args.fps == 24:
                 args.fps = cfg_fps
             if args.delay == 30:
                 args.delay = cfg_delay
+            if not args.rotate:
+                args.rotate = cfg_rotate
             if cfg_loop:
                 args.loop = True
             if cfg_show:
@@ -893,8 +917,10 @@ def main():
     write_pid()
     log(f"tinyscreen starting ({mode}: {target})")
 
-    disp = Display()
+    disp = Display(rotate=args.rotate)
     disp.wait_for_device()
+    if args.rotate:
+        log(f"Output rotated {args.rotate}°, render size {disp.render_w}x{disp.render_h}")
     write_state(mode, target)
 
     try:
