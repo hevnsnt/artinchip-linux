@@ -330,20 +330,53 @@ def is_running(pid):
     except OSError:
         return False
 
-def stop_existing():
+def _find_all_pids():
+    """Find all tinyscreen daemon PIDs via PID file + process scan."""
+    pids = set()
+    # From PID files
     pid = read_pid()
-    if not is_running(pid):
+    if is_running(pid):
+        pids.add(pid)
+    # Scan /proc for any other tinyscreen.py processes (catches orphans)
+    my_pid = os.getpid()
+    try:
+        for entry in os.listdir('/proc'):
+            if not entry.isdigit():
+                continue
+            p = int(entry)
+            if p == my_pid:
+                continue
+            try:
+                with open(f'/proc/{p}/cmdline', 'rb') as f:
+                    cmdline = f.read().decode(errors='replace')
+                if 'tinyscreen.py' in cmdline and ('--sysmon' in cmdline or '--url' in cmdline
+                        or '--video' in cmdline or '--test' in cmdline or '--image' in cmdline):
+                    pids.add(p)
+            except (FileNotFoundError, PermissionError):
+                pass
+    except Exception:
+        pass
+    return pids
+
+def stop_existing():
+    pids = _find_all_pids()
+    if not pids:
         return
-    os.kill(pid, signal.SIGTERM)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
     for _ in range(30):
-        if not is_running(pid):
+        if not any(is_running(p) for p in pids):
             break
         time.sleep(0.1)
     else:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
     for f in [PIDFILE, STATEFILE, '/tmp/tinyscreen.pid', '/tmp/tinyscreen.state']:
         try:
             os.unlink(f)
@@ -678,20 +711,21 @@ def main():
 
     # --off
     if args.off:
-        pid = read_pid()
-        if not is_running(pid):
+        pids = _find_all_pids()
+        if not pids:
             print("tinyscreen is not running.")
             return
         stop_existing()
-        print("tinyscreen stopped.")
+        print(f"tinyscreen stopped ({len(pids)} process{'es' if len(pids) > 1 else ''}).")
         return
 
     # --status
     if args.status:
-        pid = read_pid()
-        if not is_running(pid):
+        pids = _find_all_pids()
+        if not pids:
             print("tinyscreen is not running.")
         else:
+            pid = next(iter(pids))
             try:
                 for path in [STATEFILE, '/tmp/tinyscreen.state']:
                     if os.path.exists(path):
