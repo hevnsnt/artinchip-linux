@@ -355,84 +355,74 @@ def render_frame(w=1920, h=440):
     img = Image.new('RGB', (w, h), BG)
     draw = ImageDraw.Draw(img)
 
-    # Layout: 5 panels across the 1920px width
-    # [CPU 480px] [MEM+DISK 280px] [TEMPS 320px] [GPU 320px] [NET+SYS 480px]
     pad = 6
-    panel_y = pad
-    panel_h = h - pad * 2
+    py0 = pad                # panel top
+    ph = h - pad * 2         # panel height
+    bot = py0 + ph            # panel bottom
 
     # ═══════════════════════════════════════════════════════════════
     # Panel 1: CPU (x=6, w=470)
     # ═══════════════════════════════════════════════════════════════
     p1x, p1w = pad, 470
-    draw_panel(draw, p1x, panel_y, p1w, panel_h, "CPU")
+    draw_panel(draw, p1x, py0, p1w, ph, "CPU")
 
-    # CPU model (shortened)
     model = read_cpu_model()
-    short_model = model.replace('(R)', '').replace('(TM)', '').replace('CPU ', '').strip()
-    if len(short_model) > 30:
-        short_model = short_model[:30]
-    draw.text((p1x + 8, panel_y + 20), short_model, fill=TEXT_DIM, font=font(12))
+    short_model = model.replace('(R)', '').replace('(TM)', '').replace('CPU ', '').strip()[:32]
+    draw.text((p1x + 8, py0 + 20), short_model, fill=TEXT_DIM, font=font(12))
 
-    # Total CPU % large
     total_cpu = _cpu_history[-1] if _cpu_history else 0
-    cpu_str = f"{total_cpu:.0f}%"
-    draw.text((p1x + 8, panel_y + 36), cpu_str, fill=pct_color(total_cpu), font=font(42))
+    draw.text((p1x + 8, py0 + 36), f"{total_cpu:.0f}%", fill=pct_color(total_cpu), font=font(48))
+    draw.text((p1x + 140, py0 + 42), "Load", fill=TEXT_DIM, font=font(11))
+    draw.text((p1x + 140, py0 + 56), f"{load1:.1f}  {load5:.1f}  {load15:.1f}", fill=TEXT, font=font(14))
 
-    # Load averages
-    draw.text((p1x + 130, panel_y + 42), f"Load", fill=TEXT_DIM, font=font(11))
-    draw.text((p1x + 130, panel_y + 56), f"{load1:.1f}  {load5:.1f}  {load15:.1f}", fill=TEXT, font=font(13))
-
-    # Per-core vertical bars
-    cores_x = p1x + 10
-    cores_y = panel_y + 90
-    cores_w = p1w - 20
-    cores_h = 120
-    draw_core_bars(draw, cores_x, cores_y, cores_w, cores_h, core_pcts)
+    # Per-core bars — fill middle section
+    cores_y = py0 + 95
+    cores_h = ph - 195  # leave room for sparkline below
+    draw_core_bars(draw, p1x + 10, cores_y, p1w - 20, cores_h, core_pcts)
 
     # Core labels
     n_cores = len(core_pcts)
     if n_cores > 0:
-        bar_w = max(2, (cores_w - n_cores + 1) // n_cores)
-        gap = 1
-        total_bw = n_cores * bar_w + (n_cores - 1) * gap
-        offset = cores_x + (cores_w - total_bw) // 2
+        bar_w = max(2, (p1w - 20 - n_cores + 1) // n_cores)
+        total_bw = n_cores * bar_w + (n_cores - 1)
+        offset = p1x + 10 + (p1w - 20 - total_bw) // 2
         for i in range(n_cores):
-            bx = offset + i * (bar_w + gap)
+            bx = offset + i * (bar_w + 1)
             if n_cores <= 12 or i % 2 == 0:
                 draw.text((bx, cores_y + cores_h + 2), str(i), fill=TEXT_DIM, font=font(9))
 
-    # CPU sparkline
-    spark_y = cores_y + cores_h + 16
+    # CPU sparkline — pin to bottom of panel
+    spark_h = 80
+    spark_y = bot - spark_h - 10
     draw.text((p1x + 8, spark_y), "60s", fill=TEXT_DIM, font=font(10))
-    draw_sparkline(draw, p1x + 30, spark_y, p1w - 40, 60, _cpu_history, ACCENT, max_val=100)
-    # Current value at right end of sparkline
+    draw_sparkline(draw, p1x + 30, spark_y, p1w - 40, spark_h, _cpu_history, ACCENT, max_val=100)
     if _cpu_history:
-        draw.text((p1x + p1w - 45, spark_y + 2), f"{_cpu_history[-1]:.0f}%",
-                  fill=pct_color(_cpu_history[-1]), font=font(12))
+        draw.text((p1x + p1w - 50, spark_y + 4), f"{_cpu_history[-1]:.0f}%",
+                  fill=pct_color(_cpu_history[-1]), font=font(13))
 
     # ═══════════════════════════════════════════════════════════════
     # Panel 2: Memory + Disk (x=482, w=270)
     # ═══════════════════════════════════════════════════════════════
     p2x, p2w = p1x + p1w + pad, 270
-    draw_panel(draw, p2x, panel_y, p2w, panel_h, "MEMORY")
+    draw_panel(draw, p2x, py0, p2w, ph, "MEMORY")
 
-    # RAM
-    draw.text((p2x + 8, panel_y + 22), f"{mem_pct:.0f}%", fill=pct_color(mem_pct), font=font(36))
-    draw.text((p2x + 90, panel_y + 36), f"{mem_used:.1f} / {mem_total:.1f} GB",
-              fill=TEXT, font=font(14))
+    # Divide panel into 3 zones: RAM, Disk, Swap
+    zone_h = (ph - 20) // 3  # ~140px each at 440px
 
-    draw_bar(draw, p2x + 8, panel_y + 68, p2w - 16, 18, mem_pct, pct_color(mem_pct))
+    # RAM zone
+    ry = py0 + 22
+    draw.text((p2x + 8, ry), f"{mem_pct:.0f}%", fill=pct_color(mem_pct), font=font(42))
+    draw.text((p2x + 100, ry + 14), f"{mem_used:.1f} / {mem_total:.1f} GB", fill=TEXT, font=font(15))
+    draw_bar(draw, p2x + 8, ry + 54, p2w - 16, 22, mem_pct, pct_color(mem_pct))
 
-    # Disk
-    draw.text((p2x + 8, panel_y + 100), "DISK /", fill=ACCENT, font=font(13))
-    draw.text((p2x + 8, panel_y + 118), f"{disk_pct:.0f}%", fill=pct_color(disk_pct), font=font(30))
-    draw.text((p2x + 70, panel_y + 128), f"{disk_used:.0f} / {disk_total:.0f} GB",
-              fill=TEXT, font=font(14))
+    # Disk zone
+    dy = py0 + 22 + zone_h
+    draw.text((p2x + 8, dy), "DISK /", fill=ACCENT, font=font(14))
+    draw.text((p2x + 8, dy + 20), f"{disk_pct:.0f}%", fill=pct_color(disk_pct), font=font(36))
+    draw.text((p2x + 80, dy + 30), f"{disk_used:.0f} / {disk_total:.0f} GB", fill=TEXT, font=font(15))
+    draw_bar(draw, p2x + 8, dy + 62, p2w - 16, 22, disk_pct, pct_color(disk_pct))
 
-    draw_bar(draw, p2x + 8, panel_y + 158, p2w - 16, 18, disk_pct, pct_color(disk_pct))
-
-    # Swap
+    # Swap zone
     try:
         with open('/proc/meminfo') as f:
             mi = {}
@@ -444,11 +434,12 @@ def render_frame(w=1920, h=440):
         swap_used = swap_total - swap_free
         if swap_total > 0:
             swap_pct = 100.0 * swap_used / swap_total
-            draw.text((p2x + 8, panel_y + 190), "SWAP", fill=ACCENT, font=font(13))
-            draw.text((p2x + 60, panel_y + 190),
-                      f"{swap_used//1024}M / {swap_total//1024}M  ({swap_pct:.0f}%)",
-                      fill=TEXT_DIM, font=font(12))
-            draw_bar(draw, p2x + 8, panel_y + 208, p2w - 16, 12, swap_pct, PURPLE)
+            sy = py0 + 22 + zone_h * 2
+            draw.text((p2x + 8, sy), "SWAP", fill=ACCENT, font=font(14))
+            draw.text((p2x + 8, sy + 20), f"{swap_pct:.0f}%", fill=pct_color(swap_pct), font=font(30))
+            draw.text((p2x + 70, sy + 26),
+                      f"{swap_used//1024}M / {swap_total//1024}M", fill=TEXT_DIM, font=font(13))
+            draw_bar(draw, p2x + 8, sy + 54, p2w - 16, 18, swap_pct, PURPLE)
     except Exception:
         pass
 
@@ -456,106 +447,128 @@ def render_frame(w=1920, h=440):
     # Panel 3: Temperatures (x=758, w=310)
     # ═══════════════════════════════════════════════════════════════
     p3x, p3w = p2x + p2w + pad, 310
-    draw_panel(draw, p3x, panel_y, p3w, panel_h, "TEMPERATURES")
+    draw_panel(draw, p3x, py0, p3w, ph, "TEMPERATURES")
 
-    ty = panel_y + 24
-    # Package temp big
+    # Package temp — big display
     pkg_temp = temps.get('Package id 0', 0)
-    draw.text((p3x + 8, ty), f"{pkg_temp:.0f}", fill=temp_color(pkg_temp), font=font(52))
-    draw.text((p3x + 75, ty + 6), "°C", fill=temp_color(pkg_temp), font=font(20))
-    draw.text((p3x + 75, ty + 32), "Package", fill=TEXT_DIM, font=font(12))
+    draw.text((p3x + 8, py0 + 26), f"{pkg_temp:.0f}", fill=temp_color(pkg_temp), font=font(64))
+    draw.text((p3x + 90, py0 + 32), "°C", fill=temp_color(pkg_temp), font=font(24))
+    draw.text((p3x + 90, py0 + 62), "Package", fill=TEXT_DIM, font=font(13))
 
-    # Per-core temps as a grid
+    # Per-core temps — spread into available space
     core_temps = {k: v for k, v in temps.items() if k.startswith('Core')}
-    ty += 70
-    col = 0
-    for label, temp in sorted(core_temps.items()):
-        cx = p3x + 8 + (col % 3) * 100
-        cy = ty + (col // 3) * 40
-        draw.text((cx, cy), label, fill=TEXT_DIM, font=font(11))
-        draw.text((cx, cy + 14), f"{temp:.0f}°C", fill=temp_color(temp), font=font(18))
-        col += 1
+    n_ct = len(core_temps)
+    if n_ct > 0:
+        # Calculate grid: 3 columns, dynamic row height
+        rows = (n_ct + 2) // 3
+        row_h = min(55, (ph - 150) // max(rows + 1, 1))
+        ty = py0 + 110
+        col = 0
+        for label, temp in sorted(core_temps.items()):
+            cx = p3x + 8 + (col % 3) * 100
+            cy = ty + (col // 3) * row_h
+            draw.text((cx, cy), label, fill=TEXT_DIM, font=font(12))
+            draw.text((cx, cy + 16), f"{temp:.0f}°C", fill=temp_color(temp), font=font(22))
+            col += 1
 
-    # PCH temp
+    # PCH temp at bottom
     pch = temps.get('PCH', None)
     if pch:
-        py = ty + ((col + 2) // 3) * 40 + 8
-        draw.text((p3x + 8, py), "PCH", fill=TEXT_DIM, font=font(11))
-        draw.text((p3x + 8, py + 14), f"{pch:.0f}°C", fill=temp_color(pch), font=font(18))
+        draw.text((p3x + 8, bot - 40), "PCH", fill=TEXT_DIM, font=font(12))
+        draw.text((p3x + 8, bot - 24), f"{pch:.0f}°C", fill=temp_color(pch), font=font(20))
 
     # ═══════════════════════════════════════════════════════════════
     # Panel 4: GPU (x=1074, w=310)
     # ═══════════════════════════════════════════════════════════════
     p4x, p4w = p3x + p3w + pad, 310
-    draw_panel(draw, p4x, panel_y, p4w, panel_h, "GPU")
+    draw_panel(draw, p4x, py0, p4w, ph, "GPU")
 
     if gpu:
-        # GPU name
         gname = gpu['name'].replace('NVIDIA ', '').replace('GeForce ', '')
-        draw.text((p4x + 8, panel_y + 22), gname, fill=TEXT_DIM, font=font(13))
+        draw.text((p4x + 8, py0 + 22), gname, fill=TEXT_DIM, font=font(14))
 
-        # Temperature big
-        draw.text((p4x + 8, panel_y + 42), f"{gpu['temp']}°C",
-                  fill=temp_color(gpu['temp']), font=font(38))
+        # Temp — big
+        draw.text((p4x + 8, py0 + 44), f"{gpu['temp']}°C",
+                  fill=temp_color(gpu['temp']), font=font(48))
 
-        # Utilization
-        draw.text((p4x + 8, panel_y + 92), "Utilization", fill=TEXT_DIM, font=font(11))
-        draw.text((p4x + 8, panel_y + 106), f"{gpu['util']}%",
-                  fill=pct_color(gpu['util']), font=font(22))
-        draw_bar(draw, p4x + 8, panel_y + 134, p4w - 16, 14, gpu['util'], pct_color(gpu['util']))
+        # Utilization — middle section
+        uy = py0 + 110
+        draw.text((p4x + 8, uy), "Utilization", fill=TEXT_DIM, font=font(12))
+        draw.text((p4x + 8, uy + 18), f"{gpu['util']}%",
+                  fill=pct_color(gpu['util']), font=font(28))
+        draw_bar(draw, p4x + 8, uy + 52, p4w - 16, 20, gpu['util'], pct_color(gpu['util']))
 
-        # VRAM
+        # VRAM — bottom section
         vram_pct = 100.0 * gpu['mem_used'] / gpu['mem_total'] if gpu['mem_total'] else 0
-        draw.text((p4x + 8, panel_y + 160), "VRAM", fill=TEXT_DIM, font=font(11))
-        draw.text((p4x + 8, panel_y + 174), f"{gpu['mem_used']}M / {gpu['mem_total']}M",
-                  fill=TEXT, font=font(16))
-        draw_bar(draw, p4x + 8, panel_y + 198, p4w - 16, 14, vram_pct, CYAN)
+        vy = py0 + ph // 2 + 40
+        draw.text((p4x + 8, vy), "VRAM", fill=TEXT_DIM, font=font(12))
+        draw.text((p4x + 8, vy + 18), f"{gpu['mem_used']}M / {gpu['mem_total']}M",
+                  fill=TEXT, font=font(20))
+        draw_bar(draw, p4x + 8, vy + 46, p4w - 16, 20, vram_pct, CYAN)
+
+        # GPU power/clock if available (bottom)
+        try:
+            out = subprocess.run(
+                ['nvidia-smi', '--query-gpu=power.draw,clocks.current.graphics',
+                 '--format=csv,noheader,nounits'],
+                capture_output=True, text=True, timeout=2)
+            if out.returncode == 0:
+                parts = out.stdout.strip().split(', ')
+                power = parts[0].strip()
+                clock = parts[1].strip()
+                draw.text((p4x + 8, bot - 38), f"{power}W", fill=YELLOW, font=font(16))
+                draw.text((p4x + 100, bot - 38), f"{clock} MHz", fill=TEXT, font=font(16))
+        except Exception:
+            pass
     else:
-        draw.text((p4x + 8, panel_y + 30), "No GPU detected", fill=TEXT_DIM, font=font(14))
+        draw.text((p4x + 8, py0 + 40), "No GPU", fill=TEXT_DIM, font=font(16))
+        draw.text((p4x + 8, py0 + 60), "detected", fill=TEXT_DIM, font=font(16))
 
     # ═══════════════════════════════════════════════════════════════
-    # Panel 5: Network + System (x=1390, w=524)
+    # Panel 5: Network + System (x=1390, w=remaining)
     # ═══════════════════════════════════════════════════════════════
     p5x, p5w = p4x + p4w + pad, w - (p4x + p4w + pad) - pad
-    draw_panel(draw, p5x, panel_y, p5w, panel_h, "NETWORK")
+    draw_panel(draw, p5x, py0, p5w, ph, "NETWORK")
 
     # RX/TX rates
-    draw.text((p5x + 8, panel_y + 22), "RX", fill=GREEN, font=font(13))
-    draw.text((p5x + 35, panel_y + 22), fmt_bytes(rx_s), fill=TEXT, font=font(15))
-    draw.text((p5x + 8, panel_y + 42), "TX", fill=ORANGE, font=font(13))
-    draw.text((p5x + 35, panel_y + 42), fmt_bytes(tx_s), fill=TEXT, font=font(15))
+    draw.text((p5x + 8, py0 + 24), "RX", fill=GREEN, font=font(14))
+    draw.text((p5x + 38, py0 + 24), fmt_bytes(rx_s), fill=TEXT, font=font(16))
+    draw.text((p5x + 8, py0 + 46), "TX", fill=ORANGE, font=font(14))
+    draw.text((p5x + 38, py0 + 46), fmt_bytes(tx_s), fill=TEXT, font=font(16))
 
-    # Network sparklines
+    # Network sparklines — taller
     max_net = max(max(_net_rx_history, default=1), max(_net_tx_history, default=1), 1)
     spark_w = p5w - 16
-    draw_sparkline(draw, p5x + 8, panel_y + 66, spark_w, 50, _net_rx_history, GREEN, max_val=max_net)
-    draw_sparkline(draw, p5x + 8, panel_y + 120, spark_w, 50, _net_tx_history, ORANGE, max_val=max_net)
+    net_spark_h = 65
+    draw_sparkline(draw, p5x + 8, py0 + 70, spark_w, net_spark_h, _net_rx_history, GREEN, max_val=max_net)
+    draw_sparkline(draw, p5x + 8, py0 + 70 + net_spark_h + 6, spark_w, net_spark_h,
+                   _net_tx_history, ORANGE, max_val=max_net)
 
-    # System info section
-    sy = panel_y + 180
+    # System info — fills bottom of panel
+    sy = py0 + 70 + net_spark_h * 2 + 16
     draw.rectangle([p5x, sy, p5x + p5w, sy + 1], fill=BORDER)
-    draw.text((p5x + 8, sy + 4), "SYSTEM", fill=ACCENT, font=font(13))
+    draw.text((p5x + 8, sy + 6), "SYSTEM", fill=ACCENT, font=font(13))
 
     hostname = read_hostname()
-    draw.text((p5x + 8, sy + 24), hostname, fill=TEXT_BRIGHT, font=font(22))
+    draw.text((p5x + 8, sy + 26), hostname, fill=TEXT_BRIGHT, font=font(26))
 
-    # Uptime
-    draw.text((p5x + 8, sy + 52), "Uptime", fill=TEXT_DIM, font=font(11))
-    draw.text((p5x + 60, sy + 52), uptime_str, fill=TEXT, font=font(13))
+    info_y = sy + 58
+    row_gap = 22
+    draw.text((p5x + 8, info_y), "Uptime", fill=TEXT_DIM, font=font(12))
+    draw.text((p5x + 70, info_y), uptime_str, fill=TEXT, font=font(14))
 
-    # IP
     try:
         out = subprocess.run(['hostname', '-I'], capture_output=True, text=True, timeout=2)
         ips = out.stdout.strip().split()
         primary_ip = ips[0] if ips else '—'
     except Exception:
         primary_ip = '—'
-    draw.text((p5x + 8, sy + 72), "IP", fill=TEXT_DIM, font=font(11))
-    draw.text((p5x + 60, sy + 72), primary_ip, fill=TEXT, font=font(13))
+    draw.text((p5x + 8, info_y + row_gap), "IP", fill=TEXT_DIM, font=font(12))
+    draw.text((p5x + 70, info_y + row_gap), primary_ip, fill=TEXT, font=font(14))
 
-    # Time
-    draw.text((p5x + 8, sy + 92), "Time", fill=TEXT_DIM, font=font(11))
-    draw.text((p5x + 60, sy + 92), time.strftime("%Y-%m-%d %H:%M:%S"), fill=TEXT, font=font(13))
+    draw.text((p5x + 8, info_y + row_gap * 2), "Time", fill=TEXT_DIM, font=font(12))
+    draw.text((p5x + 70, info_y + row_gap * 2), time.strftime("%Y-%m-%d %H:%M:%S"),
+              fill=TEXT, font=font(14))
 
     # Bottom accent line
     draw.rectangle([0, h - 2, w, h], fill=ACCENT_DIM)
