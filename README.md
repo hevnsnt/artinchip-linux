@@ -8,13 +8,22 @@ These cheap USB-C bar monitors ship with Windows-only drivers and have **zero Li
 ![Python](https://img.shields.io/badge/python-3.10+-green)
 ![Platform](https://img.shields.io/badge/platform-Linux-orange)
 
-## System Monitor Dashboard
+## Screenshots
 
-Built-in hardware monitoring dashboard designed for the bar form factor:
+**System Monitor** — CPU cores, temps, GPU, memory, network with sparkline graphs:
+![sysmon](screenshots/sysmon.png)
 
-![sysmon screenshot](screenshots/sysmon.png)
+**Crypto Ticker** — live prices from CoinGecko with 24h change and sparklines:
+![ticker](screenshots/ticker.png)
 
-*Live CPU per-core usage with 60s sparkline, memory/disk/swap, per-core temperatures, NVIDIA GPU stats, network throughput with graphs, and system info — all rendered at 1fps directly to the display.*
+**Docker Monitor** — container status, CPU/memory bars, network I/O:
+![docker](screenshots/docker_mon.png)
+
+**Clock + Weather** — time, wttr.in weather, system quick stats:
+![clock](screenshots/clock.png)
+
+**Network Monitor** — active connections, state breakdown, process names:
+![netmon](screenshots/netmon.png)
 
 ## Supported Hardware
 
@@ -27,18 +36,6 @@ Built-in hardware monitoring dashboard designed for the bar form factor:
 
 If your `lsusb` shows **`33c3:0e0x`** and you're stuck on Linux, this is for you.
 
-## What It Does
-
-- **System monitor dashboard** — CPU cores, temps, GPU, memory, network graphs
-- Displays **websites** (live rendering via virtual display + headless browser)
-- Plays **YouTube videos** (fetches up to 4K source, scales to display)
-- Plays **local video files** (any format ffmpeg supports)
-- Shows **static images**
-- Runs as a **background daemon** with auto-reconnect
-- **Survives USB disconnects** — reconnects and re-authenticates automatically
-- **Waits for network targets** — shows status screen until your server is up
-- **systemd service** for boot-on-startup dashboard use
-
 ## Quick Install
 
 ```bash
@@ -47,62 +44,117 @@ cd artinchip-linux
 sudo ./install.sh
 ```
 
-That's it. The installer handles dependencies, udev rules, and puts `tinyscreen` in your PATH.
+The installer handles dependencies, udev rules, and puts `tinyscreen` in your PATH.
+
+## Display Modes
+
+### Built-in Dashboards
+
+| Mode | Flag | Description |
+|------|------|-------------|
+| **System Monitor** | `--sysmon` | CPU per-core bars, temps, GPU, memory, disk, swap, network sparklines |
+| **Crypto Ticker** | `--ticker` | Live BTC/ETH/SOL/DOGE/ADA/DOT/LINK/AVAX prices with 24h change |
+| **Clock + Weather** | `--clock` | Large clock, wttr.in weather, system quick stats |
+| **Matrix Rain** | `--matrix` | Digital rain effect with real syslog data overlay |
+| **Audio Visualizer** | `--visualizer` | FFT spectrum analyzer from PulseAudio/PipeWire capture |
+| **Now Playing** | `--nowplaying` | MPRIS media info (Spotify, etc.) with progress bar |
+| **Docker Monitor** | `--docker` | Container status, CPU/memory bars, network I/O |
+| **Network Monitor** | `--netmon` | Active connections, state breakdown, process names |
+| **News Crawl** | `--news` | Scrolling RSS headlines from Reuters, BBC, Hacker News |
+| **Pomodoro Timer** | `--pomodoro` | 25/5 focus timer with circular progress and color shifts |
+
+### Media & Web
+
+| Mode | Flag | Description |
+|------|------|-------------|
+| **Website** | `--url URL` | Live virtual display + headless browser |
+| **YouTube** | `--video URL` | Fetches up to 4K source, scales to display |
+| **Local Video** | `--video FILE` | Any format ffmpeg supports, `--loop` to repeat |
+| **Static Image** | `--image FILE` | Display any image file |
 
 ## Usage
 
 ```bash
-# System monitor dashboard (CPU, temps, GPU, memory, network)
+# Single mode
 tinyscreen --sysmon
+tinyscreen --matrix
+tinyscreen --ticker
+tinyscreen --docker
 
-# Display a website (live dashboard)
+# Rotate through modes (30 seconds each)
+tinyscreen --show all --delay 30
+
+# Rotate specific modes
+tinyscreen --show sysmon matrix ticker docker --delay 20
+
+# Media
 tinyscreen --url https://your-dashboard.example.com/
-
-# Play a YouTube video (fetches up to 4K, scales to fit)
 tinyscreen --video "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-
-# Play a local video (looped)
 tinyscreen --video /path/to/video.mp4 --loop
 
-# Show a static image
-tinyscreen --image /path/to/wallpaper.jpg
+# Rotate the display output
+tinyscreen --sysmon --rotate 180
+tinyscreen --show all --rotate 90
 
-# Test pattern (verify display works)
-tinyscreen --test
+# Just run — uses config.yml defaults
+tinyscreen
 
-# Check what's running
+# Control
 tinyscreen --status
-
-# Stop
 tinyscreen --off
 ```
 
 All commands run in the background by default. Add `--fg` to run in foreground.
 
-### Options
+### All Options
 
 | Flag | Description |
 |------|-------------|
-| `--sysmon` | Live system monitor dashboard |
-| `--url URL` | Display a website with a live virtual display + browser |
-| `--video URL/FILE` | Play a video file or YouTube URL (up to 4K source) |
-| `--image FILE` | Display a static image |
-| `--test` | Show test pattern |
-| `--off` | Stop the running instance |
-| `--status` | Show current status |
+| `--show MODE [MODE...]` | Rotate through modes (`all` for all, or list names) |
+| `--delay N` | Seconds per mode when rotating (default: 30) |
+| `--rotate N` | Rotate output 0/90/180/270 degrees |
 | `--fps N` | Target framerate (default: 24) |
 | `-q N` | JPEG quality 1-100 (default: auto) |
 | `--loop` | Loop video playback |
 | `--fg` | Run in foreground (don't daemonize) |
+| `--off` | Stop the running instance |
+| `--status` | Show current status |
+| `--test` | Show test pattern |
+
+## Configuration
+
+When you run `tinyscreen` with no arguments, it reads `/opt/tinyscreen/config.yml`:
+
+```yaml
+# What to run by default
+mode: rotate
+
+# Modes to cycle through
+rotate:
+  modes:
+    - sysmon
+    - matrix
+    - ticker
+    - docker
+    - clock
+  delay: 30  # seconds per mode
+
+# URL mode settings
+url: http://your-dashboard.local:8421/
+
+# Global settings
+quality: 80            # JPEG quality 1-100
+fps: 24                # target framerate
+rotate_display: 0      # 0, 90, 180, or 270 degrees
+```
+
+CLI flags always override config.yml.
 
 ### Auto-Start on Boot
 
 ```bash
-# Edit the URL in the service file first:
+# Edit the systemd service to your preference:
 sudo nano /etc/systemd/system/tinyscreen.service
-
-# Or for sysmon, change the ExecStart line to:
-#   ExecStart=/usr/bin/python3 /opt/tinyscreen/tinyscreen.py --sysmon --fg
 
 # Enable and start
 sudo systemctl enable tinyscreen
@@ -115,22 +167,6 @@ sudo systemctl start tinyscreen
 tail -f /tmp/tinyscreen.log
 ```
 
-## System Monitor Details
-
-The `--sysmon` mode renders a full-width hardware dashboard with five panels:
-
-| Panel | Content |
-|-------|---------|
-| **CPU** | Per-core vertical bars, total %, load averages, 60-second sparkline history |
-| **Memory** | RAM usage + bar, disk usage + bar, swap usage + bar |
-| **Temperatures** | CPU package temp (large), per-core temps grid, PCH temp |
-| **GPU** | NVIDIA temp, utilization + bar, VRAM + bar, power draw, clock speed |
-| **Network + System** | RX/TX rates, RX/TX sparkline graphs, hostname, uptime, IP, time |
-
-All data is read directly from `/proc` and `/sys` — no `psutil` dependency. NVIDIA GPU stats come from `nvidia-smi` (gracefully skipped if not present).
-
-Colors are dynamic: green < 50%, yellow < 75%, orange < 90%, red >= 90%.
-
 ## How It Works
 
 These ArtInChip USB displays require a **proprietary RSA authentication handshake** before they accept any frame data. The Windows driver does this silently, and ArtInChip's official Linux driver (`AiCast`) requires a working DRM display pipeline that conflicts with NVIDIA's proprietary drivers.
@@ -139,9 +175,9 @@ These ArtInChip USB displays require a **proprietary RSA authentication handshak
 
 1. **USB enumeration** — Claims the vendor-specific bulk interface (class 0xFF)
 2. **RSA authentication** — Two-phase challenge-response required by device firmware:
-   - *Phase 1 (auth_dev)*: Host encrypts random challenge with embedded RSA public key, device proves it holds the private key by decrypting and returning the plaintext
-   - *Phase 2 (auth_host)*: Device sends RSA-signed blob, host performs public-key recovery and returns the plaintext. (Note: since the public key is embedded in the binary, this phase proves the host has the correct key — not strong host identity, but required by the firmware.)
-3. **JPEG frame streaming** — Sends 20-byte frame headers followed by JPEG-encoded frames over USB bulk transfers
+   - *Phase 1 (auth_dev)*: Host encrypts random challenge with RSA public key, device decrypts with private key, returns plaintext
+   - *Phase 2 (auth_host)*: Device sends RSA-signed blob, host recovers plaintext via public key, returns it
+3. **JPEG frame streaming** — 20-byte frame headers + JPEG data over USB bulk transfers
 
 The protocol was reverse-engineered from the `aic-render` userspace binary and the `aic_drm_ud` kernel module source.
 
@@ -149,11 +185,14 @@ The protocol was reverse-engineered from the `aic-render` userspace binary and t
 
 Installed automatically by `install.sh`:
 
-- **Python 3.10+** with: `pyusb`, `Pillow`, `cryptography`
+- **Python 3.10+** with: `pyusb`, `Pillow`, `cryptography`, `PyYAML`
 - **ffmpeg** — video decoding and X11 capture
 - **Xvfb** — virtual framebuffer for URL mode
 - **Chromium or Google Chrome** — headless browser for URL mode
 - **yt-dlp** *(optional)* — YouTube video support
+- **numpy** *(optional)* — audio visualizer FFT
+- **feedparser** *(optional)* — RSS news crawl
+- **requests** *(optional)* — crypto ticker, weather
 
 ## Troubleshooting
 
@@ -165,25 +204,19 @@ Installed automatically by `install.sh`:
 
 ### "Access denied (insufficient permissions)"
 
-The udev rule didn't take effect. Either:
-- Replug the USB cable, or
-- Run: `sudo udevadm control --reload-rules && sudo udevadm trigger`
+Replug the USB cable, or run: `sudo udevadm control --reload-rules && sudo udevadm trigger`
 
 ### Display shows nothing after auth
 
-- Make sure you're not also running the `aic_drm_ud` kernel module: `lsmod | grep aic`
-- If loaded, blacklist it: `echo "blacklist aic_drm_ud" | sudo tee /etc/modprobe.d/blacklist-aic.conf`
-- Or unload it: `sudo rmmod aic_drm_ud`
+Make sure the `aic_drm_ud` kernel module isn't loaded: `lsmod | grep aic`. If loaded, blacklist it: `echo "blacklist aic_drm_ud" | sudo tee /etc/modprobe.d/blacklist-aic.conf`
 
 ### NVIDIA + ArtInChip kernel module conflict
 
-If you installed ArtInChip's official `AiCast` Linux driver and Xorg shows "Configure crtc failed" — that's the NVIDIA proprietary driver refusing to share pixmaps. **tinyscreen** avoids this entirely by bypassing the kernel DRM layer.
+If you installed ArtInChip's official `AiCast` driver and Xorg shows "Configure crtc failed" — that's the NVIDIA driver refusing to share pixmaps. **tinyscreen** avoids this by bypassing the kernel DRM layer entirely.
 
 ### Video playback is choppy
 
-- Lower quality for smaller frames: `tinyscreen --video URL -q 50`
-- Lower framerate: `tinyscreen --video URL --fps 15`
-- USB 2.0 Hi-Speed (480 Mbps) is the bottleneck — ~35 MB/s practical throughput
+Lower quality (`-q 50`) or framerate (`--fps 15`). USB 2.0 Hi-Speed (480 Mbps) is the bottleneck.
 
 ## Uninstall
 
@@ -211,27 +244,38 @@ Frame header (20 bytes):
 Auth command (20 bytes, same struct):
   magic = 0xA1C62B10 (auth_dev) or 0xA1C62B11 (auth_host)
   length = 0x100 (RSA key size)
-
-Device parameters via: USB vendor control request 0, IN direction
 ```
 
-### Device Parameters Response
+### Project Structure
 
 ```
-u16 version, chipid, media_format, media_bus,
-    media_mode_num, media_width, media_height, media_fps
-u8  edid[128]
-u8  reserved[16]
+/opt/tinyscreen/
+├── tinyscreen.py      # main driver + daemon + all mode dispatch
+├── tinyscreen         # shell wrapper (handles sudo)
+├── sysmon.py          # system monitor renderer
+├── config.yml         # default configuration
+├── modes/
+│   ├── ticker.py      # crypto price ticker
+│   ├── clock.py       # clock + weather + system info
+│   ├── matrix.py      # matrix digital rain
+│   ├── visualizer.py  # audio spectrum analyzer
+│   ├── nowplaying.py  # MPRIS now playing
+│   ├── docker_mon.py  # docker container monitor
+│   ├── netmon.py      # network connections
+│   ├── newscrawl.py   # RSS news crawl
+│   └── pomodoro.py    # focus timer
+├── install.sh
+└── uninstall.sh
 ```
 
 ## Contributing
 
 PRs welcome! Especially for:
 - Testing with other ArtInChip display models (0e01, 0e04, 0e05)
-- H.264 frame encoding support (the device supports it — `media_format=0x11`)
+- New display modes
+- H.264 frame encoding (device supports `media_format=0x11`)
 - Wayland compositor support
-- Improved frame rate via H.264 or direct RGB565 mode
-- Custom sysmon panel layouts
+- Direct RGB565 mode for higher frame rates
 
 ## License
 
@@ -244,4 +288,4 @@ MIT License. See [LICENSE](LICENSE).
 
 ---
 
-**Keywords**: ArtInChip Linux driver, USB bar monitor Linux, ZHAOCAILIN Linux driver, 33c3:0e02 Linux, 1920x440 USB display Linux, stretched bar LCD Linux, AiCast Linux alternative, USB portable monitor Linux driver, ArtInChip RISC-V display, cheap USB monitor Linux, system monitor bar display, hardware dashboard Linux
+**Keywords**: ArtInChip Linux driver, USB bar monitor Linux, ZHAOCAILIN Linux driver, 33c3:0e02 Linux, 1920x440 USB display Linux, stretched bar LCD Linux, AiCast Linux alternative, USB portable monitor Linux driver, ArtInChip RISC-V display, cheap USB monitor Linux, system monitor bar display, hardware dashboard Linux, crypto ticker display, matrix rain display, docker monitor display

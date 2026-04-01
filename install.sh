@@ -86,10 +86,14 @@ fi
 
 # ── Install files ───────────────────────────────────────────────────
 info "Installing to ${INSTALL_DIR}..."
-mkdir -p "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR/modes"
 cp "$SCRIPT_DIR/tinyscreen.py" "$INSTALL_DIR/tinyscreen.py"
 cp "$SCRIPT_DIR/tinyscreen" "$INSTALL_DIR/tinyscreen"
+cp "$SCRIPT_DIR/sysmon.py" "$INSTALL_DIR/sysmon.py"
 cp "$SCRIPT_DIR/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
+cp "$SCRIPT_DIR"/modes/*.py "$INSTALL_DIR/modes/"
+# Only copy config if not already present (preserve user edits)
+[ ! -f "$INSTALL_DIR/config.yml" ] && cp "$SCRIPT_DIR/config.yml" "$INSTALL_DIR/config.yml"
 chmod +x "$INSTALL_DIR/tinyscreen" "$INSTALL_DIR/tinyscreen.py" "$INSTALL_DIR/uninstall.sh"
 
 # Symlink
