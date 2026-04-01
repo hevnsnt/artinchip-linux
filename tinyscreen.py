@@ -588,23 +588,101 @@ def mode_image(disp, path, quality):
             disp.wait_for_device()
         time.sleep(5)
 
-# ── Mode: sysmon ────────────────────────────────────────────────────
-def mode_sysmon(disp, quality):
-    """Live system monitor dashboard — renders CPU, RAM, temps, GPU, network."""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    sys.path.insert(0, script_dir)
-    from sysmon import render_frame, read_cpu, read_net
-    # Warm up differential readings
-    read_cpu()
-    read_net()
-    time.sleep(0.5)
-    log(f"System monitor running (1fps, quality={quality})")
+# ── Mode: generic module runner ─────────────────────────────────────
+MODES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'modes')
+ALL_MODES = ['sysmon', 'ticker', 'clock', 'matrix', 'visualizer',
+             'nowplaying', 'docker', 'netmon', 'news', 'pomodoro']
+
+def _load_mode(name):
+    """Import a mode module by name. Returns module or None."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, MODES_DIR)
+    module_map = {
+        'sysmon': 'sysmon',
+        'ticker': 'ticker',
+        'clock': 'clock',
+        'matrix': 'matrix',
+        'visualizer': 'visualizer',
+        'nowplaying': 'nowplaying',
+        'docker': 'docker_mon',
+        'netmon': 'netmon',
+        'news': 'newscrawl',
+        'pomodoro': 'pomodoro',
+    }
+    mod_name = module_map.get(name, name)
+    try:
+        import importlib
+        return importlib.import_module(mod_name)
+    except Exception as e:
+        log(f"Failed to load mode '{name}': {e}")
+        return None
+
+def _init_mode(mod):
+    """Call init() on a mode module if it has one."""
+    if hasattr(mod, 'init'):
+        try:
+            mod.init()
+        except Exception as e:
+            log(f"Mode init error: {e}")
+    # Warm up sysmon differential readings
+    if hasattr(mod, 'read_cpu'):
+        mod.read_cpu()
+    if hasattr(mod, 'read_net'):
+        mod.read_net()
+        time.sleep(0.5)
+
+def _cleanup_mode(mod):
+    """Call cleanup() on a mode module if it has one."""
+    if hasattr(mod, 'cleanup'):
+        try:
+            mod.cleanup()
+        except Exception:
+            pass
+
+def _mode_fps(name):
+    """Return the ideal sleep interval for a mode."""
+    fast = {'visualizer': 1/30, 'matrix': 1/20, 'news': 1/15, 'ticker': 1/15}
+    return fast.get(name, 1.0)
+
+def mode_single(disp, name, quality):
+    """Run a single display mode in a loop."""
+    mod = _load_mode(name)
+    if not mod:
+        return
+    _init_mode(mod)
+    interval = _mode_fps(name)
+    log(f"Mode '{name}' running ({1/interval:.0f}fps, quality={quality})")
+    try:
+        while True:
+            img = mod.render_frame(disp.w, disp.h)
+            jpeg = image_to_jpeg(img, quality)
+            if not disp.send(jpeg):
+                disp.wait_for_device()
+            time.sleep(interval)
+    finally:
+        _cleanup_mode(mod)
+
+def mode_rotate(disp, mode_names, delay, quality):
+    """Rotate through multiple display modes, switching every `delay` seconds."""
+    log(f"Rotating {len(mode_names)} modes every {delay}s: {', '.join(mode_names)}")
     while True:
-        img = render_frame(disp.w, disp.h)
-        jpeg = image_to_jpeg(img, quality)
-        if not disp.send(jpeg):
-            disp.wait_for_device()
-        time.sleep(1)
+        for name in mode_names:
+            mod = _load_mode(name)
+            if not mod:
+                continue
+            _init_mode(mod)
+            interval = _mode_fps(name)
+            log(f"Showing '{name}' for {delay}s")
+            t_end = time.monotonic() + delay
+            try:
+                while time.monotonic() < t_end:
+                    img = mod.render_frame(disp.w, disp.h)
+                    jpeg = image_to_jpeg(img, quality)
+                    if not disp.send(jpeg):
+                        disp.wait_for_device()
+                    time.sleep(interval)
+            finally:
+                _cleanup_mode(mod)
 
 # ── Mode: test ──────────────────────────────────────────────────────
 def mode_test(disp, quality):
@@ -632,28 +710,45 @@ def handle_sigterm(signum, frame):
 # ── Main ────────────────────────────────────────────────────────────
 def main():
     import argparse
+
+    modes_list = ' '.join(ALL_MODES)
     parser = argparse.ArgumentParser(
         prog='tinyscreen',
         description='ArtInChip USB bar display driver',
         epilog='Examples:\n'
+               '  tinyscreen --sysmon                              # system monitor\n'
+               '  tinyscreen --matrix                              # matrix rain\n'
+               '  tinyscreen --ticker                              # crypto prices\n'
+               '  tinyscreen --show all --delay 30                 # rotate all modes\n'
+               '  tinyscreen --show sysmon matrix ticker --delay 20\n'
                '  tinyscreen --url https://example.com\n'
-               '  tinyscreen --video "https://youtu.be/dQw4w9WgXcQ"\n'
-               '  tinyscreen --video movie.mp4 --loop --fps 30\n'
-               '  tinyscreen --image photo.jpg\n'
-               '  tinyscreen --test\n'
+               '  tinyscreen --video "https://youtu.be/..."        # YouTube 4K\n'
                '  tinyscreen --off\n'
-               '  tinyscreen --status\n',
+               f'\nAvailable modes: {modes_list}\n',
         formatter_class=argparse.RawDescriptionHelpFormatter)
 
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--url', help='Display a website (live virtual display + browser)')
     group.add_argument('--video', help='Play a video or YouTube URL (fetches up to 4K)')
     group.add_argument('--image', help='Display a static image')
-    group.add_argument('--sysmon', action='store_true', help='Live system monitor dashboard')
+    group.add_argument('--sysmon', action='store_true', help='System monitor dashboard')
+    group.add_argument('--ticker', action='store_true', help='Crypto price ticker')
+    group.add_argument('--clock', action='store_true', help='Clock + weather + system info')
+    group.add_argument('--matrix', action='store_true', help='Matrix digital rain')
+    group.add_argument('--visualizer', action='store_true', help='Audio spectrum visualizer')
+    group.add_argument('--nowplaying', action='store_true', help='Now playing (MPRIS)')
+    group.add_argument('--docker', action='store_true', help='Docker container monitor')
+    group.add_argument('--netmon', action='store_true', help='Network connections monitor')
+    group.add_argument('--news', action='store_true', help='RSS news crawl')
+    group.add_argument('--pomodoro', action='store_true', help='Pomodoro focus timer')
+    group.add_argument('--show', nargs='+', metavar='MODE',
+                       help='Rotate through modes (use "all" for all, or list names)')
     group.add_argument('--test', action='store_true', help='Show test pattern')
     group.add_argument('--off', action='store_true', help='Stop running instance')
     group.add_argument('--status', action='store_true', help='Show status')
 
+    parser.add_argument('--delay', type=int, default=30,
+                        help='Seconds per mode when using --show (default: 30)')
     parser.add_argument('--fps', type=int, default=24, help='Framerate (default: 24)')
     parser.add_argument('-q', '--quality', type=int, default=0,
                         help='JPEG quality 1-100 (default: auto)')
@@ -693,16 +788,32 @@ def main():
     # Stop any existing instance
     stop_existing()
 
+    # Determine mode and target label
     if args.url:
         mode, target = 'url', args.url
     elif args.video:
         mode, target = 'video', args.video
     elif args.image:
         mode, target = 'image', args.image
-    elif args.sysmon:
-        mode, target = 'sysmon', 'system monitor'
-    else:
+    elif args.show:
+        show_modes = ALL_MODES if 'all' in args.show else [m for m in args.show if m in ALL_MODES]
+        if not show_modes:
+            print(f"No valid modes. Available: {', '.join(ALL_MODES)}")
+            return
+        mode, target = 'rotate', f"{', '.join(show_modes)} ({args.delay}s each)"
+    elif args.test:
         mode, target = 'test', 'test pattern'
+    else:
+        # Check which single mode flag was set
+        single_mode = None
+        for m in ALL_MODES:
+            if getattr(args, m, False):
+                single_mode = m
+                break
+        if single_mode:
+            mode, target = single_mode, single_mode
+        else:
+            mode, target = 'test', 'test pattern'
 
     if not args.fg:
         print(f"tinyscreen: {mode} -> {target}")
@@ -719,16 +830,19 @@ def main():
     write_state(mode, target)
 
     try:
+        quality = args.quality or 80
         if args.video:
             mode_video(disp, args.video, args.quality or 70, args.fps, args.loop)
         elif args.url:
             mode_url(disp, args.url, args.quality or 75, args.fps)
         elif args.image:
             mode_image(disp, args.image, args.quality or 85)
-        elif args.sysmon:
-            mode_sysmon(disp, args.quality or 85)
-        elif args.test:
-            mode_test(disp, args.quality or 80)
+        elif mode == 'rotate':
+            mode_rotate(disp, show_modes, args.delay, quality)
+        elif mode == 'test':
+            mode_test(disp, quality)
+        elif mode in ALL_MODES:
+            mode_single(disp, mode, quality)
     except KeyboardInterrupt:
         log("Interrupted.")
     except Exception as e:
