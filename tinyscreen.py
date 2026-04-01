@@ -339,12 +339,13 @@ def _find_all_pids():
         pids.add(pid)
     # Scan /proc for any other tinyscreen.py processes (catches orphans)
     my_pid = os.getpid()
+    my_ppid = os.getppid()
     try:
         for entry in os.listdir('/proc'):
             if not entry.isdigit():
                 continue
             p = int(entry)
-            if p == my_pid:
+            if p == my_pid or p == my_ppid:
                 continue
             try:
                 with open(f'/proc/{p}/cmdline', 'rb') as f:
