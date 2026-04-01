@@ -661,50 +661,12 @@ def _mode_fps(name):
     fast = {'visualizer': 1/30, 'matrix': 1/20, 'news': 1/15, 'ticker': 1/15}
     return fast.get(name, 1.0)
 
-def _setup_touch(disp, name, mod):
-    """Set up touch input with mode-specific gesture handlers. Returns TouchInput or None."""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    sys.path.insert(0, script_dir)
-    try:
-        from touch import TouchInput
-    except ImportError:
-        log("Touch module not found")
-        return None
-
-    touch = TouchInput(screen_w=disp.w, screen_h=disp.h)
-
-    if name == 'pomodoro':
-        # Tap = pause/resume, swipe right = skip phase, swipe left = restart phase
-        def on_tap(x, y):
-            paused = mod.toggle_pause()
-            log(f"Pomodoro {'paused' if paused else 'resumed'} (tap at {x},{y})")
-        def on_swipe_right():
-            mod.skip_phase()
-            log("Pomodoro: skipped to next phase (swipe right)")
-        def on_swipe_left():
-            mod.init()
-            log("Pomodoro: restarted (swipe left)")
-        touch.on_tap = on_tap
-        touch.on_swipe_right = on_swipe_right
-        touch.on_swipe_left = on_swipe_left
-    else:
-        # Generic: tap logs coordinates (useful for debugging / future modes)
-        touch.on_tap = lambda x, y: log(f"Touch tap at {x},{y}")
-
-    if touch.start():
-        log(f"Touchscreen enabled for '{name}'")
-        return touch
-    else:
-        log("Touchscreen not found or not accessible")
-        return None
-
-def mode_single(disp, name, quality, enable_touch=False):
+def mode_single(disp, name, quality):
     """Run a single display mode in a loop."""
     mod = _load_mode(name)
     if not mod:
         return
     _init_mode(mod)
-    touch = _setup_touch(disp, name, mod) if enable_touch else None
     interval = _mode_fps(name)
     rw, rh = disp.render_w, disp.render_h
     log(f"Mode '{name}' running ({1/interval:.0f}fps, quality={quality}, {rw}x{rh})")
@@ -716,11 +678,9 @@ def mode_single(disp, name, quality, enable_touch=False):
                 disp.wait_for_device()
             time.sleep(interval)
     finally:
-        if touch:
-            touch.stop()
         _cleanup_mode(mod)
 
-def mode_rotate(disp, mode_names, delay, quality, enable_touch=False):
+def mode_rotate(disp, mode_names, delay, quality):
     """Rotate through multiple display modes, switching every `delay` seconds."""
     rw, rh = disp.render_w, disp.render_h
     log(f"Rotating {len(mode_names)} modes every {delay}s: {', '.join(mode_names)}")
@@ -730,7 +690,6 @@ def mode_rotate(disp, mode_names, delay, quality, enable_touch=False):
             if not mod:
                 continue
             _init_mode(mod)
-            touch = _setup_touch(disp, name, mod) if enable_touch else None
             interval = _mode_fps(name)
             log(f"Showing '{name}' for {delay}s")
             t_end = time.monotonic() + delay
@@ -742,8 +701,6 @@ def mode_rotate(disp, mode_names, delay, quality, enable_touch=False):
                         disp.wait_for_device()
                     time.sleep(interval)
             finally:
-                if touch:
-                    touch.stop()
                 _cleanup_mode(mod)
 
 # ── Mode: test ──────────────────────────────────────────────────────
@@ -791,7 +748,6 @@ def load_config():
     quality = cfg.get('quality', 0)
     fps = cfg.get('fps', 24)
     rotate = cfg.get('rotate_display', 0)
-    touch = cfg.get('touch', False)
     loop = False
     delay = 30
     show_modes = None
@@ -817,7 +773,7 @@ def load_config():
     elif mode in ALL_MODES:
         target = mode
 
-    return mode, target, quality, fps, delay, loop, show_modes, rotate, touch
+    return mode, target, quality, fps, delay, loop, show_modes, rotate
 
 # ── Main ────────────────────────────────────────────────────────────
 def main():
@@ -869,7 +825,6 @@ def main():
     parser.add_argument('-q', '--quality', type=int, default=0,
                         help='JPEG quality 1-100 (default: auto)')
     parser.add_argument('--loop', action='store_true', help='Loop video')
-    parser.add_argument('--touch', action='store_true', help='Enable touchscreen input')
     parser.add_argument('--fg', action='store_true', help='Run in foreground')
 
     args = parser.parse_args()
@@ -934,7 +889,7 @@ def main():
     if mode is None:
         cfg = load_config()
         if cfg:
-            mode, target, cfg_quality, cfg_fps, cfg_delay, cfg_loop, cfg_show, cfg_rotate, cfg_touch = cfg
+            mode, target, cfg_quality, cfg_fps, cfg_delay, cfg_loop, cfg_show, cfg_rotate = cfg
             if not args.quality:
                 args.quality = cfg_quality
             if args.fps == 24:
@@ -943,8 +898,6 @@ def main():
                 args.delay = cfg_delay
             if not args.rotate:
                 args.rotate = cfg_rotate
-            if cfg_touch and not args.touch:
-                args.touch = True
             if cfg_loop:
                 args.loop = True
             if cfg_show:
@@ -979,11 +932,11 @@ def main():
         elif args.image:
             mode_image(disp, args.image, args.quality or 85)
         elif mode == 'rotate':
-            mode_rotate(disp, show_modes, args.delay, quality, args.touch)
+            mode_rotate(disp, show_modes, args.delay, quality)
         elif mode == 'test':
             mode_test(disp, quality)
         elif mode in ALL_MODES:
-            mode_single(disp, mode, quality, args.touch)
+            mode_single(disp, mode, quality)
     except KeyboardInterrupt:
         log("Interrupted.")
     except Exception as e:
