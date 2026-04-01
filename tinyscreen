@@ -1,19 +1,5 @@
 #!/bin/bash
 # tinyscreen - ArtInChip USB bar display driver
-# Wrapper that handles sudo automatically for USB access
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-PYTHON="${SCRIPT_DIR}/tinyscreen.py"
-
-# --off and --status don't need root
-first_arg="${1:-}"
-if [ "$first_arg" = "--off" ] || [ "$first_arg" = "--status" ]; then
-    exec python3 "$PYTHON" "$@"
-fi
-
-# Everything else needs root for USB access
-if [ "$(id -u)" -ne 0 ]; then
-    exec sudo python3 "$PYTHON" "$@"
-fi
-
-exec python3 "$PYTHON" "$@"
+exec python3 "${SCRIPT_DIR}/tinyscreen.py" "$@"
