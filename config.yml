@@ -1,0 +1,35 @@
+# tinyscreen configuration
+# This file is used when you run `tinyscreen` with no arguments.
+
+# Mode to run. Options:
+#   sysmon, ticker, clock, matrix, visualizer, nowplaying,
+#   docker, netmon, news, pomodoro, url, video, image, test
+#
+# Or use "rotate" to cycle through multiple modes.
+mode: rotate
+
+# Modes to rotate through (only used when mode: rotate)
+# Use "all" for all modes, or list specific ones.
+rotate:
+  modes:
+    - sysmon
+    - matrix
+    - ticker
+    - docker
+    - clock
+  delay: 30  # seconds per mode
+
+# URL mode settings (only used when mode: url)
+url: http://egon.local:8421/
+
+# Video mode settings (only used when mode: video)
+video:
+  source: ""
+  loop: false
+
+# Image mode settings (only used when mode: image)
+image: ""
+
+# Global settings
+quality: 80       # JPEG quality 1-100 (0 = auto per mode)
+fps: 24           # target framerate for video/url modes

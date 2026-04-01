@@ -707,6 +707,54 @@ def handle_sigterm(signum, frame):
             pass
     sys.exit(0)
 
+# ── Config file ─────────────────────────────────────────────────────
+CONFIGFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.yml')
+
+def load_config():
+    """Load config.yml and return (mode, target, quality, fps, delay, loop, show_modes)."""
+    try:
+        import yaml
+    except ImportError:
+        return None
+    if not os.path.exists(CONFIGFILE):
+        return None
+    try:
+        with open(CONFIGFILE) as f:
+            cfg = yaml.safe_load(f)
+    except Exception as e:
+        log(f"Config error: {e}")
+        return None
+
+    mode = cfg.get('mode', 'sysmon')
+    quality = cfg.get('quality', 0)
+    fps = cfg.get('fps', 24)
+    loop = False
+    delay = 30
+    show_modes = None
+    target = mode
+
+    if mode == 'rotate':
+        rot = cfg.get('rotate', {})
+        modes_list = rot.get('modes', ['sysmon'])
+        if 'all' in modes_list:
+            show_modes = ALL_MODES
+        else:
+            show_modes = [m for m in modes_list if m in ALL_MODES]
+        delay = rot.get('delay', 30)
+        target = f"{', '.join(show_modes)} ({delay}s each)"
+    elif mode == 'url':
+        target = cfg.get('url', 'http://localhost/')
+    elif mode == 'video':
+        vcfg = cfg.get('video', {})
+        target = vcfg.get('source', '')
+        loop = vcfg.get('loop', False)
+    elif mode == 'image':
+        target = cfg.get('image', '')
+    elif mode in ALL_MODES:
+        target = mode
+
+    return mode, target, quality, fps, delay, loop, show_modes
+
 # ── Main ────────────────────────────────────────────────────────────
 def main():
     import argparse
@@ -716,6 +764,7 @@ def main():
         prog='tinyscreen',
         description='ArtInChip USB bar display driver',
         epilog='Examples:\n'
+               '  tinyscreen                                       # run from config.yml\n'
                '  tinyscreen --sysmon                              # system monitor\n'
                '  tinyscreen --matrix                              # matrix rain\n'
                '  tinyscreen --ticker                              # crypto prices\n'
@@ -724,10 +773,11 @@ def main():
                '  tinyscreen --url https://example.com\n'
                '  tinyscreen --video "https://youtu.be/..."        # YouTube 4K\n'
                '  tinyscreen --off\n'
-               f'\nAvailable modes: {modes_list}\n',
+               f'\nAvailable modes: {modes_list}\n'
+               f'Config file: {CONFIGFILE}\n',
         formatter_class=argparse.RawDescriptionHelpFormatter)
 
-    group = parser.add_mutually_exclusive_group(required=True)
+    group = parser.add_mutually_exclusive_group()
     group.add_argument('--url', help='Display a website (live virtual display + browser)')
     group.add_argument('--video', help='Play a video or YouTube URL (fetches up to 4K)')
     group.add_argument('--image', help='Display a static image')
@@ -788,7 +838,10 @@ def main():
     # Stop any existing instance
     stop_existing()
 
-    # Determine mode and target label
+    # Determine mode — check CLI flags first, fall back to config.yml
+    show_modes = None
+    mode = target = None
+
     if args.url:
         mode, target = 'url', args.url
     elif args.video:
@@ -804,16 +857,31 @@ def main():
     elif args.test:
         mode, target = 'test', 'test pattern'
     else:
-        # Check which single mode flag was set
-        single_mode = None
+        # Check single mode flags
         for m in ALL_MODES:
             if getattr(args, m, False):
-                single_mode = m
+                mode, target = m, m
                 break
-        if single_mode:
-            mode, target = single_mode, single_mode
+
+    # No CLI mode specified — load from config.yml
+    if mode is None:
+        cfg = load_config()
+        if cfg:
+            mode, target, cfg_quality, cfg_fps, cfg_delay, cfg_loop, cfg_show = cfg
+            if not args.quality:
+                args.quality = cfg_quality
+            if args.fps == 24:
+                args.fps = cfg_fps
+            if args.delay == 30:
+                args.delay = cfg_delay
+            if cfg_loop:
+                args.loop = True
+            if cfg_show:
+                show_modes = cfg_show
+            print(f"Loaded config from {CONFIGFILE}")
         else:
-            mode, target = 'test', 'test pattern'
+            mode, target = 'sysmon', 'sysmon'
+            print("No mode specified and no config.yml found, defaulting to --sysmon")
 
     if not args.fg:
         print(f"tinyscreen: {mode} -> {target}")
