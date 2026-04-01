@@ -657,9 +657,22 @@ def _cleanup_mode(mod):
             pass
 
 def _mode_fps(name):
-    """Return the ideal sleep interval for a mode."""
-    fast = {'visualizer': 1/30, 'matrix': 1/20, 'news': 1/15, 'ticker': 1/15}
-    return fast.get(name, 1.0)
+    """Return the ideal sleep interval for a mode.
+    Display is 60Hz and USB bandwidth is not a bottleneck (~5MB/s at q85
+    vs ~35MB/s available), so the limit is host-side frame generation speed.
+    """
+    return {
+        'visualizer': 1/60,  # 60fps — audio needs smooth updates
+        'matrix':     1/30,  # 30fps — good balance for rain effect
+        'news':       1/30,  # 30fps — smooth text scrolling
+        'ticker':     1/30,  # 30fps — smooth scroll
+        'nowplaying': 1/10,  # 10fps — progress bar updates
+        'sysmon':     1/2,   # 2fps  — sensor data doesn't change faster
+        'clock':      1,     # 1fps  — seconds tick
+        'docker':     1/2,   # 2fps  — container stats refresh
+        'netmon':     1/2,   # 2fps  — connection updates
+        'pomodoro':   1,     # 1fps  — countdown seconds
+    }.get(name, 1.0)
 
 def mode_single(disp, name, quality):
     """Run a single display mode in a loop."""
