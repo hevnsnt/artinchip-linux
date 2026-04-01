@@ -91,9 +91,11 @@ def _fetch_weather():
             'temp_c':     current.get('temp_C', '?'),
             'temp_f':     current.get('temp_F', '?'),
             'feels_c':    current.get('FeelsLikeC', '?'),
+            'feels_f':    current.get('FeelsLikeF', '?'),
             'condition':  current.get('weatherDesc', [{'value': 'Unknown'}])[0].get('value', 'Unknown'),
             'humidity':   current.get('humidity', '?'),
             'wind_kph':   current.get('windspeedKmph', '?'),
+            'wind_mph':   current.get('windspeedMiles', '?'),
             'wind_dir':   current.get('winddir16Point', ''),
             'pressure':   current.get('pressure', '?'),
             'visibility': current.get('visibility', '?'),
@@ -313,14 +315,20 @@ def render_frame(w=1920, h=440):
         draw.text((p2x + 8, wy_base), _weather.get('location', ''),
                   fill=TEXT_DIM, font=font(16))
 
-        # Temperature — large
-        temp_str = f"{_weather['temp_c']}°C"
+        # Temperature — large (use Fahrenheit if available, else Celsius)
+        temp_f = _weather.get('temp_f')
+        feels_f = _weather.get('feels_f')
+        if temp_f and temp_f != '?':
+            temp_str = f"{temp_f}°F"
+            feels_str = f"Feels like {feels_f}°F"
+        else:
+            temp_str = f"{_weather['temp_c']}°C"
+            feels_str = f"Feels like {_weather['feels_c']}°C"
         draw.text((p2x + 8, wy_base + 24), temp_str,
                   fill=ACCENT, font=font(72))
 
         # Feels like
-        draw.text((p2x + 8, wy_base + 105),
-                  f"Feels like {_weather['feels_c']}°C",
+        draw.text((p2x + 8, wy_base + 105), feels_str,
                   fill=TEXT_DIM, font=font(18))
 
         # Condition text
@@ -344,7 +352,7 @@ def render_frame(w=1920, h=440):
 
         details = [
             ("Humidity",    f"{_weather['humidity']}%",     CYAN),
-            ("Wind",        f"{_weather['wind_kph']} km/h {_weather['wind_dir']}", TEXT),
+            ("Wind",        f"{_weather.get('wind_mph', _weather['wind_kph'])} mph {_weather['wind_dir']}", TEXT),
             ("Pressure",    f"{_weather['pressure']} hPa",  TEXT),
             ("Visibility",  f"{_weather['visibility']} km", TEXT),
             ("UV Index",    str(_weather['uv_index']),      YELLOW),
