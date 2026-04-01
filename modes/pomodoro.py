@@ -54,18 +54,40 @@ _phase_duration = WORK_DURATION
 _phase_start = 0.0       # monotonic time when phase started
 _session_count = 0       # completed work sessions
 _total_work_time = 0.0   # total seconds spent in WORK phases
+_paused = False           # is the timer paused?
+_paused_at = 0.0          # monotonic time when paused
+_pause_accumulated = 0.0  # total seconds spent paused in current phase
 _initialized = False
 
 def init():
     """Initialize / restart the pomodoro timer."""
     global _phase, _phase_duration, _phase_start, _session_count
-    global _total_work_time, _initialized
+    global _total_work_time, _initialized, _paused, _paused_at, _pause_accumulated
     _phase = 'WORK'
     _phase_duration = WORK_DURATION
     _phase_start = time.monotonic()
     _session_count = 0
     _total_work_time = 0.0
+    _paused = False
+    _paused_at = 0.0
+    _pause_accumulated = 0.0
     _initialized = True
+
+def toggle_pause():
+    """Pause or resume the timer. Returns new paused state."""
+    global _paused, _paused_at, _pause_accumulated
+    if _paused:
+        # Resume — accumulate paused time
+        _pause_accumulated += time.monotonic() - _paused_at
+        _paused = False
+    else:
+        _paused = True
+        _paused_at = time.monotonic()
+    return _paused
+
+def skip_phase():
+    """Skip to the next phase."""
+    _advance_phase()
 
 def _advance_phase():
     """Transition to the next phase."""
@@ -87,6 +109,9 @@ def _advance_phase():
         _phase_duration = WORK_DURATION
 
     _phase_start = time.monotonic()
+    _paused = False
+    _paused_at = 0.0
+    _pause_accumulated = 0.0
 
 # ── Drawing helpers ─────────────────────────────────────────────────
 def _progress_color(pct_remaining):
@@ -159,12 +184,16 @@ def render_frame(w=1920, h=440):
         init()
 
     now = time.monotonic()
-    elapsed = now - _phase_start
+    if _paused:
+        # While paused, freeze elapsed at the moment we paused
+        elapsed = _paused_at - _phase_start - _pause_accumulated
+    else:
+        elapsed = now - _phase_start - _pause_accumulated
     remaining = max(0, _phase_duration - elapsed)
     pct_remaining = (remaining / _phase_duration * 100) if _phase_duration > 0 else 0
 
-    # Auto-advance phase when time runs out
-    if remaining <= 0:
+    # Auto-advance phase when time runs out (not while paused)
+    if remaining <= 0 and not _paused:
         _advance_phase()
         elapsed = 0
         remaining = _phase_duration
@@ -206,9 +235,11 @@ def render_frame(w=1920, h=440):
             phase_label = "LONG BREAK"
         else:
             phase_label = "SHORT BREAK"
+    if _paused:
+        phase_label += "  PAUSED"
 
     draw.text((pad + 16, content_y + 14), phase_label,
-              fill=phase_color, font=font(38))
+              fill=phase_color if not _paused else YELLOW, font=font(38))
 
     # Session info
     sy = content_y + 70
