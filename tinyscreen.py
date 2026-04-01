@@ -602,6 +602,24 @@ def mode_image(disp, path, quality):
             disp.wait_for_device()
         time.sleep(5)
 
+# ── Mode: sysmon ────────────────────────────────────────────────────
+def mode_sysmon(disp, quality):
+    """Live system monitor dashboard — renders CPU, RAM, temps, GPU, network."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, script_dir)
+    from sysmon import render_frame, read_cpu, read_net
+    # Warm up differential readings
+    read_cpu()
+    read_net()
+    time.sleep(0.5)
+    log(f"System monitor running (1fps, quality={quality})")
+    while True:
+        img = render_frame(disp.w, disp.h)
+        jpeg = image_to_jpeg(img, quality)
+        if not disp.send(jpeg):
+            disp.wait_for_device()
+        time.sleep(1)
+
 # ── Mode: test ──────────────────────────────────────────────────────
 def mode_test(disp, quality):
     img = make_test_pattern(disp.w, disp.h)
@@ -645,6 +663,7 @@ def main():
     group.add_argument('--url', help='Display a website (live virtual display + browser)')
     group.add_argument('--video', help='Play a video or YouTube URL (fetches up to 4K)')
     group.add_argument('--image', help='Display a static image')
+    group.add_argument('--sysmon', action='store_true', help='Live system monitor dashboard')
     group.add_argument('--test', action='store_true', help='Show test pattern')
     group.add_argument('--off', action='store_true', help='Stop running instance')
     group.add_argument('--status', action='store_true', help='Show status')
@@ -699,6 +718,8 @@ def main():
         mode, target = 'video', args.video
     elif args.image:
         mode, target = 'image', args.image
+    elif args.sysmon:
+        mode, target = 'sysmon', 'system monitor'
     else:
         mode, target = 'test', 'test pattern'
 
@@ -723,6 +744,8 @@ def main():
             mode_url(disp, args.url, args.quality or 75, args.fps)
         elif args.image:
             mode_image(disp, args.image, args.quality or 85)
+        elif args.sysmon:
+            mode_sysmon(disp, args.quality or 85)
         elif args.test:
             mode_test(disp, args.quality or 80)
     except KeyboardInterrupt:
