@@ -8,6 +8,14 @@ These cheap USB-C bar monitors ship with Windows-only drivers and have **zero Li
 ![Python](https://img.shields.io/badge/python-3.10+-green)
 ![Platform](https://img.shields.io/badge/platform-Linux-orange)
 
+## System Monitor Dashboard
+
+Built-in hardware monitoring dashboard designed for the bar form factor:
+
+![sysmon screenshot](screenshots/sysmon.png)
+
+*Live CPU per-core usage with 60s sparkline, memory/disk/swap, per-core temperatures, NVIDIA GPU stats, network throughput with graphs, and system info — all rendered at 1fps directly to the display.*
+
 ## Supported Hardware
 
 | Display | Resolution | Chipset | USB ID | Status |
@@ -21,6 +29,7 @@ If your `lsusb` shows **`33c3:0e0x`** and you're stuck on Linux, this is for you
 
 ## What It Does
 
+- **System monitor dashboard** — CPU cores, temps, GPU, memory, network graphs
 - Displays **websites** (live rendering via virtual display + headless browser)
 - Plays **YouTube videos** (fetches up to 4K source, scales to display)
 - Plays **local video files** (any format ffmpeg supports)
@@ -43,10 +52,13 @@ That's it. The installer handles dependencies, udev rules, and puts `tinyscreen`
 ## Usage
 
 ```bash
+# System monitor dashboard (CPU, temps, GPU, memory, network)
+tinyscreen --sysmon
+
 # Display a website (live dashboard)
 tinyscreen --url https://your-dashboard.example.com/
 
-# Play a YouTube video
+# Play a YouTube video (fetches up to 4K, scales to fit)
 tinyscreen --video "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
 # Play a local video (looped)
@@ -65,12 +77,15 @@ tinyscreen --status
 tinyscreen --off
 ```
 
+All commands run in the background by default. Add `--fg` to run in foreground.
+
 ### Options
 
 | Flag | Description |
 |------|-------------|
+| `--sysmon` | Live system monitor dashboard |
 | `--url URL` | Display a website with a live virtual display + browser |
-| `--video URL/FILE` | Play a video file or YouTube URL |
+| `--video URL/FILE` | Play a video file or YouTube URL (up to 4K source) |
 | `--image FILE` | Display a static image |
 | `--test` | Show test pattern |
 | `--off` | Stop the running instance |
@@ -83,8 +98,11 @@ tinyscreen --off
 ### Auto-Start on Boot
 
 ```bash
-# Edit the URL in the service file first if needed:
+# Edit the URL in the service file first:
 sudo nano /etc/systemd/system/tinyscreen.service
+
+# Or for sysmon, change the ExecStart line to:
+#   ExecStart=/usr/bin/python3 /opt/tinyscreen/tinyscreen.py --sysmon --fg
 
 # Enable and start
 sudo systemctl enable tinyscreen
@@ -96,6 +114,22 @@ sudo systemctl start tinyscreen
 ```bash
 tail -f /tmp/tinyscreen.log
 ```
+
+## System Monitor Details
+
+The `--sysmon` mode renders a full-width hardware dashboard with five panels:
+
+| Panel | Content |
+|-------|---------|
+| **CPU** | Per-core vertical bars, total %, load averages, 60-second sparkline history |
+| **Memory** | RAM usage + bar, disk usage + bar, swap usage + bar |
+| **Temperatures** | CPU package temp (large), per-core temps grid, PCH temp |
+| **GPU** | NVIDIA temp, utilization + bar, VRAM + bar, power draw, clock speed |
+| **Network + System** | RX/TX rates, RX/TX sparkline graphs, hostname, uptime, IP, time |
+
+All data is read directly from `/proc` and `/sys` — no `psutil` dependency. NVIDIA GPU stats come from `nvidia-smi` (gracefully skipped if not present).
+
+Colors are dynamic: green < 50%, yellow < 75%, orange < 90%, red >= 90%.
 
 ## How It Works
 
@@ -197,6 +231,7 @@ PRs welcome! Especially for:
 - H.264 frame encoding support (the device supports it — `media_format=0x11`)
 - Wayland compositor support
 - Improved frame rate via H.264 or direct RGB565 mode
+- Custom sysmon panel layouts
 
 ## License
 
@@ -209,4 +244,4 @@ MIT License. See [LICENSE](LICENSE).
 
 ---
 
-**Keywords**: ArtInChip Linux driver, USB bar monitor Linux, ZHAOCAILIN Linux driver, 33c3:0e02 Linux, 1920x440 USB display Linux, stretched bar LCD Linux, AiCast Linux alternative, USB portable monitor Linux driver, ArtInChip RISC-V display, cheap USB monitor Linux
+**Keywords**: ArtInChip Linux driver, USB bar monitor Linux, ZHAOCAILIN Linux driver, 33c3:0e02 Linux, 1920x440 USB display Linux, stretched bar LCD Linux, AiCast Linux alternative, USB portable monitor Linux driver, ArtInChip RISC-V display, cheap USB monitor Linux, system monitor bar display, hardware dashboard Linux
