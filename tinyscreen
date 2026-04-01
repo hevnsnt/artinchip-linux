@@ -5,12 +5,11 @@
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 PYTHON="${SCRIPT_DIR}/tinyscreen.py"
 
-# --off and --status don't need sudo
-case "$*" in
-    *--off*|*--status*)
-        exec python3 "$PYTHON" "$@"
-        ;;
-esac
+# --off and --status don't need root
+first_arg="${1:-}"
+if [ "$first_arg" = "--off" ] || [ "$first_arg" = "--status" ]; then
+    exec python3 "$PYTHON" "$@"
+fi
 
 # Everything else needs root for USB access
 if [ "$(id -u)" -ne 0 ]; then

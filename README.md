@@ -104,9 +104,9 @@ These ArtInChip USB displays require a **proprietary RSA authentication handshak
 **tinyscreen** bypasses the kernel driver entirely and talks directly to the device via USB:
 
 1. **USB enumeration** — Claims the vendor-specific bulk interface (class 0xFF)
-2. **RSA authentication** — Two-phase challenge-response:
-   - *Host verifies device*: Host encrypts random challenge with embedded RSA public key, device decrypts with private key, returns plaintext
-   - *Device verifies host*: Device sends RSA-signed challenge, host recovers plaintext via public key, returns it
+2. **RSA authentication** — Two-phase challenge-response required by device firmware:
+   - *Phase 1 (auth_dev)*: Host encrypts random challenge with embedded RSA public key, device proves it holds the private key by decrypting and returning the plaintext
+   - *Phase 2 (auth_host)*: Device sends RSA-signed blob, host performs public-key recovery and returns the plaintext. (Note: since the public key is embedded in the binary, this phase proves the host has the correct key — not strong host identity, but required by the firmware.)
 3. **JPEG frame streaming** — Sends 20-byte frame headers followed by JPEG-encoded frames over USB bulk transfers
 
 The protocol was reverse-engineered from the `aic-render` userspace binary and the `aic_drm_ud` kernel module source.

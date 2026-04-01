@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-tinyscreen - ArtInChip USB bar display driver.
+tinyscreen - ArtInChip USB bar display driver for Linux.
+
+Reverse-engineered protocol driver for ArtInChip (33c3:0e0x) USB bar monitors.
+Performs RSA device authentication, then streams JPEG frames over USB bulk transfers.
 
 Usage:
   tinyscreen --url URL         Show a website (live virtual display + browser)
@@ -9,13 +12,6 @@ Usage:
   tinyscreen --test            Show test pattern
   tinyscreen --off             Stop the running tinyscreen instance
   tinyscreen --status          Check if tinyscreen is running
-
-Features:
-  - Daemonizes by default (--fg for foreground)
-  - Auto-reconnects on USB disconnect or display errors
-  - Waits for target URL to become reachable before launching browser
-  - Shows status screen while waiting
-  - systemd service support (tinyscreen.service)
 """
 
 import struct
@@ -23,23 +19,30 @@ import time
 import sys
 import io
 import os
+import re
+import secrets
+import resource
 import subprocess
 import signal
 import shutil
 import atexit
 import json
 import socket
+import tempfile
 from urllib.parse import urlparse
 
-PIDFILE = '/tmp/tinyscreen.pid'
+PIDFILE = '/run/tinyscreen.pid'
 LOGFILE = '/tmp/tinyscreen.log'
-STATEFILE = '/tmp/tinyscreen.state'
+STATEFILE = '/run/tinyscreen.state'
 
 # ── PATH fixup (sudo drops user PATH) ──────────────────────────────
+_sudo_user = os.environ.get('SUDO_USER', '')
+if _sudo_user and not re.match(r'^[a-z_][a-z0-9_-]*$', _sudo_user):
+    _sudo_user = ''  # reject suspicious values
+
 for p in ['/home/linuxbrew/.linuxbrew/bin', '/usr/local/bin']:
     if p not in os.environ.get('PATH', ''):
         os.environ['PATH'] = p + ':' + os.environ.get('PATH', '')
-_sudo_user = os.environ.get('SUDO_USER')
 if _sudo_user:
     os.environ['PATH'] = f'/home/{_sudo_user}/.local/bin:' + os.environ['PATH']
 
@@ -57,6 +60,8 @@ VID, PID = 0x33C3, 0x0E02
 EP_OUT, EP_IN = 0x01, 0x81
 MAX_TRANSFER = 4096 * 64
 
+# RSA public key extracted from aic-render binary.
+# Used for device authentication — see README for protocol details.
 RSA_PUB_PEM = b"""-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAybdtvB1uNA4XICh+xJi1
 KJWO0GYal4lNiW69zSMIJFGzb2wkiFBX2txFaH5ZYh0TYdwmjzBqinzTsWhIasW3
@@ -84,16 +89,18 @@ def load_rsa_key():
     return serialization.load_pem_public_key(RSA_PUB_PEM)
 
 def rsa_public_decrypt(pub_key, ct):
+    """RSA signature recovery: compute m = ct^e mod n, strip PKCS#1 v1.5 type-1 padding."""
     n = pub_key.public_numbers().n
     e = pub_key.public_numbers().e
     m = pow(int.from_bytes(ct, 'big'), e, n)
     m_bytes = m.to_bytes((n.bit_length() + 7) // 8, 'big')
+    # PKCS#1 v1.5 type 1: 0x00 0x01 [0xFF padding] 0x00 [data]
     if m_bytes[0] != 0 or m_bytes[1] != 1:
         raise ValueError("Bad PKCS#1 padding")
     idx = 2
     while idx < len(m_bytes) and m_bytes[idx] == 0xFF:
         idx += 1
-    if m_bytes[idx] != 0:
+    if idx >= len(m_bytes) or m_bytes[idx] != 0:
         raise ValueError("Bad PKCS#1 separator")
     return m_bytes[idx + 1:]
 
@@ -123,16 +130,23 @@ def bulk_in(dev, size=256, timeout=5000):
     return bytes(dev.read(EP_IN, size, timeout=timeout))
 
 def authenticate(dev):
+    """Two-phase RSA authentication handshake.
+
+    Phase 1 (auth_dev): Host verifies device holds the private key.
+    Phase 2 (auth_host): Device verifies host can perform RSA public-key operations.
+    The embedded public key is shared — phase 2 is not a strong host identity proof,
+    but it is required by the device firmware before it will accept frame data.
+    """
     pk = load_rsa_key()
-    import random
-    n = random.randint(1, 244)
-    challenge = os.urandom(n)
+    # Phase 1: encrypt random challenge, device must decrypt it
+    challenge = os.urandom(secrets.randbelow(244) + 1)
     encrypted = pk.encrypt(challenge, asym_padding.PKCS1v15())
     bulk_out(dev, struct.pack('<IIHHII', AUTH_DEV_MAGIC, 0x100, 0, 0, 0, AUTH_DEV_MAGIC))
     bulk_out(dev, encrypted)
     response = bulk_in(dev, 256, timeout=3000)
-    if len(response) < n or response[:n] != challenge:
+    if len(response) < len(challenge) or response[:len(challenge)] != challenge:
         return False
+    # Phase 2: device sends signed blob, host recovers plaintext and returns it
     bulk_out(dev, struct.pack('<IIHHII', AUTH_HOST_MAGIC, 0x100, 0, 0, 0, AUTH_HOST_MAGIC))
     signed = bulk_in(dev, 256, timeout=3000)
     plaintext = rsa_public_decrypt(pk, signed)
@@ -157,7 +171,6 @@ class Display:
         self.frame_id = 0
 
     def connect(self):
-        """Find device, setup, authenticate. Returns True on success."""
         self.dev = find_device()
         if not self.dev:
             return False
@@ -175,15 +188,21 @@ class Display:
             self.dev = None
             return False
 
-    def wait_for_device(self, status_text="Waiting for display..."):
-        """Block until device is found and authenticated."""
+    def wait_for_device(self):
+        """Block until device is found and authenticated, with periodic logging."""
+        t0 = time.monotonic()
+        attempts = 0
         while True:
             if self.connect():
                 return
+            attempts += 1
+            if attempts % 5 == 1:
+                elapsed = int(time.monotonic() - t0)
+                log(f"Waiting for display... ({elapsed}s elapsed)")
             time.sleep(2)
 
     def send(self, jpeg_data):
-        """Send a JPEG frame. Returns False on USB error (needs reconnect)."""
+        """Send a JPEG frame. Returns False on USB error (caller should reconnect)."""
         if not self.dev:
             return False
         try:
@@ -214,31 +233,36 @@ def image_to_jpeg(img, quality=80):
     img.save(buf, format='JPEG', quality=quality)
     return buf.getvalue()
 
+# Font cache — avoid re-parsing from disk on every status screen
+_font_cache = {}
+
 def _load_font(size=36):
+    if size in _font_cache:
+        return _font_cache[size]
     for path in ['/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-                 '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf']:
+                 '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+                 '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf']:
         try:
-            return ImageFont.truetype(path, size)
+            font = ImageFont.truetype(path, size)
+            _font_cache[size] = font
+            return font
         except Exception:
             pass
-    return ImageFont.load_default()
+    font = ImageFont.load_default()
+    _font_cache[size] = font
+    return font
 
 def make_status_screen(w, h, line1, line2="", line3=""):
-    """Render a status/info screen."""
     img = Image.new('RGB', (w, h), (15, 15, 25))
     draw = ImageDraw.Draw(img)
-    # Accent bar at top
     draw.rectangle([0, 0, w, 3], fill=(0, 150, 255))
-    font_big = _load_font(36)
-    font_sm = _load_font(22)
     y = h // 2 - 50
-    draw.text((40, y), line1, fill=(220, 220, 240), font=font_big)
+    draw.text((40, y), line1, fill=(220, 220, 240), font=_load_font(36))
     if line2:
-        draw.text((40, y + 46), line2, fill=(140, 140, 170), font=font_sm)
+        draw.text((40, y + 46), line2, fill=(140, 140, 170), font=_load_font(22))
     if line3:
-        draw.text((40, y + 76), line3, fill=(100, 100, 130), font=font_sm)
-    # tinyscreen branding bottom-right
-    draw.text((w - 180, h - 30), "tinyscreen", fill=(60, 60, 80), font=font_sm)
+        draw.text((40, y + 76), line3, fill=(100, 100, 130), font=_load_font(22))
+    draw.text((w - 180, h - 30), "tinyscreen", fill=(60, 60, 80), font=_load_font(22))
     return img
 
 def make_test_pattern(w, h):
@@ -249,13 +273,11 @@ def make_test_pattern(w, h):
     bw = w // len(colors)
     for i, c in enumerate(colors):
         draw.rectangle([i * bw, 40, (i + 1) * bw, h - 40], fill=c)
-    font = _load_font(48)
-    draw.text((w // 2 - 200, h // 2 - 30), "tinyscreen", fill=(255, 255, 255), font=font)
+    draw.text((w // 2 - 200, h // 2 - 30), "tinyscreen", fill=(255, 255, 255), font=_load_font(48))
     return img
 
 # ── Network helpers ─────────────────────────────────────────────────
 def check_url_reachable(url, timeout=3):
-    """Quick check if a URL's host:port is reachable."""
     parsed = urlparse(url)
     host = parsed.hostname
     port = parsed.port or (443 if parsed.scheme == 'https' else 80)
@@ -276,15 +298,13 @@ def wait_for_url(disp, url, quality=75):
     log(f"Waiting for {host_display}...")
     dots = 0
     while not check_url_reachable(url):
-        dot_str = "." * (dots % 4)
         screen = make_status_screen(
             disp.w, disp.h,
-            f"Waiting for {host_display}{dot_str}",
-            f"Will connect automatically when available",
+            f"Waiting for {host_display}{'.' * (dots % 4)}",
+            "Will connect automatically when available",
             time.strftime("%H:%M:%S"))
         jpeg = image_to_jpeg(screen, quality)
         if not disp.send(jpeg):
-            # USB disconnected while waiting, reconnect display
             disp.wait_for_device()
         dots += 1
         time.sleep(3)
@@ -292,11 +312,14 @@ def wait_for_url(disp, url, quality=75):
 
 # ── Daemon management ───────────────────────────────────────────────
 def read_pid():
-    try:
-        with open(PIDFILE) as f:
-            return int(f.read().strip())
-    except (FileNotFoundError, ValueError):
-        return None
+    # Check both /run and /tmp for backwards compat
+    for path in [PIDFILE, '/tmp/tinyscreen.pid']:
+        try:
+            with open(path) as f:
+                return int(f.read().strip())
+        except (FileNotFoundError, ValueError):
+            continue
+    return None
 
 def is_running(pid):
     if pid is None:
@@ -321,20 +344,31 @@ def stop_existing():
             os.kill(pid, signal.SIGKILL)
         except OSError:
             pass
-    for f in [PIDFILE, STATEFILE]:
+    for f in [PIDFILE, STATEFILE, '/tmp/tinyscreen.pid', '/tmp/tinyscreen.state']:
         try:
             os.unlink(f)
-        except FileNotFoundError:
+        except (FileNotFoundError, PermissionError):
             pass
 
 def write_pid():
-    with open(PIDFILE, 'w') as f:
-        f.write(str(os.getpid()))
+    try:
+        with open(PIDFILE, 'w') as f:
+            f.write(str(os.getpid()))
+    except PermissionError:
+        # Fall back to /tmp if /run isn't writable
+        with open('/tmp/tinyscreen.pid', 'w') as f:
+            f.write(str(os.getpid()))
 
 def write_state(mode, target):
-    with open(STATEFILE, 'w') as f:
-        json.dump({'mode': mode, 'target': target, 'pid': os.getpid(),
-                   'started': time.strftime('%Y-%m-%d %H:%M:%S')}, f)
+    try:
+        path = STATEFILE
+        with open(path, 'w') as f:
+            json.dump({'mode': mode, 'target': target, 'pid': os.getpid(),
+                       'started': time.strftime('%Y-%m-%d %H:%M:%S')}, f)
+    except PermissionError:
+        with open('/tmp/tinyscreen.state', 'w') as f:
+            json.dump({'mode': mode, 'target': target, 'pid': os.getpid(),
+                       'started': time.strftime('%Y-%m-%d %H:%M:%S')}, f)
 
 def daemonize():
     if os.fork() > 0:
@@ -342,6 +376,11 @@ def daemonize():
     os.setsid()
     if os.fork() > 0:
         sys.exit(0)
+    # Close inherited file descriptors
+    maxfd = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+    if maxfd == resource.RLIM_INFINITY:
+        maxfd = 1024
+    os.closerange(3, maxfd)
     sys.stdin = open(os.devnull)
     global _log_fh
     _log_fh = open(LOGFILE, 'a')
@@ -358,14 +397,14 @@ def find_yt_dlp():
                  '/usr/local/bin/yt-dlp', '/usr/bin/yt-dlp']:
         if path and os.path.isfile(path) and os.access(path, os.X_OK):
             return path
-    su = os.environ.get('SUDO_USER')
-    if su:
-        path = f'/home/{su}/.local/bin/yt-dlp'
+    if _sudo_user:
+        path = f'/home/{_sudo_user}/.local/bin/yt-dlp'
         if os.path.isfile(path) and os.access(path, os.X_OK):
             return path
     return None
 
-def get_stream_url(video_url):
+def get_stream_urls(video_url):
+    """Resolve video URL via yt-dlp. Returns list of URLs (video, possibly audio)."""
     yt_dlp = find_yt_dlp()
     if not yt_dlp:
         log("ERROR: yt-dlp not found")
@@ -375,13 +414,13 @@ def get_stream_url(video_url):
            'bestvideo[height<=2160]+bestaudio/'
            'best[height<=2160]/best',
            '--get-url', video_url]
-    su = os.environ.get('SUDO_USER')
-    if su and os.getuid() == 0:
-        cmd = ['sudo', '-u', su] + cmd
+    if _sudo_user and os.getuid() == 0:
+        cmd = ['sudo', '-u', _sudo_user] + cmd
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode == 0:
-            return result.stdout.strip().split('\n')[0]
+            urls = [u for u in result.stdout.strip().split('\n') if u]
+            return urls if urls else None
         log(f"yt-dlp: {result.stderr.strip()[:200]}")
     except subprocess.TimeoutExpired:
         log("yt-dlp timed out")
@@ -389,11 +428,13 @@ def get_stream_url(video_url):
 
 # ── ffmpeg streaming core ───────────────────────────────────────────
 def stream_ffmpeg(disp, ffmpeg_cmd, quality, target_fps, loop=False):
-    """Read raw RGB frames from ffmpeg stdout, send as JPEG. Auto-reconnects display."""
+    """Read raw RGB frames from ffmpeg stdout, JPEG-encode, send to display."""
     frame_size = disp.w * disp.h * 3
     while True:
         log("ffmpeg starting...")
-        proc = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # Redirect stderr to tempfile to avoid pipe deadlock
+        stderr_file = tempfile.TemporaryFile()
+        proc = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=stderr_file)
         frame_id = 0
         interval = 1.0 / target_fps
         t0 = time.monotonic()
@@ -415,7 +456,6 @@ def stream_ffmpeg(disp, ffmpeg_cmd, quality, target_fps, loop=False):
                     continue
 
                 if not disp.send(jpeg):
-                    # Lost USB, reconnect and keep going
                     log("Display lost during stream, reconnecting...")
                     disp.wait_for_device()
 
@@ -431,8 +471,12 @@ def stream_ffmpeg(disp, ffmpeg_cmd, quality, target_fps, loop=False):
                 proc.wait(timeout=5)
             except Exception:
                 proc.kill()
+                proc.wait()
 
-        stderr = proc.stderr.read().decode(errors='replace').strip()
+        # Read stderr safely after process has exited
+        stderr_file.seek(0)
+        stderr = stderr_file.read().decode(errors='replace').strip()
+        stderr_file.close()
         if stderr and frame_id == 0:
             log(f"ffmpeg: {stderr[:300]}")
             return
@@ -447,21 +491,22 @@ def stream_ffmpeg(disp, ffmpeg_cmd, quality, target_fps, loop=False):
 def mode_video(disp, source, quality, fps, loop):
     if is_youtube_url(source):
         log("Resolving YouTube URL...")
-        stream_url = get_stream_url(source)
-        if not stream_url:
+        urls = get_stream_urls(source)
+        if not urls:
             log("ERROR: Could not resolve video URL")
             return
-        input_src = stream_url
-        log(f"Streaming up to 4K source -> {disp.w}x{disp.h}")
+        log(f"Got {len(urls)} stream URL(s), scaling to {disp.w}x{disp.h}")
     else:
-        input_src = source
+        urls = [source]
 
-    ffmpeg_cmd = [
-        'ffmpeg', '-hide_banner', '-loglevel', 'error',
-        '-i', input_src,
+    # Build ffmpeg command with separate -i for each URL (video + audio)
+    ffmpeg_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error']
+    for u in urls:
+        ffmpeg_cmd += ['-i', u]
+    ffmpeg_cmd += [
         '-vf', f'scale={disp.w}:{disp.h}:force_original_aspect_ratio=increase,'
                f'crop={disp.w}:{disp.h}',
-        '-r', str(fps), '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'
+        '-r', str(fps), '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-an', '-'
     ]
     stream_ffmpeg(disp, ffmpeg_cmd, quality, fps, loop)
 
@@ -485,7 +530,6 @@ def mode_url(disp, url, quality, fps):
     atexit.register(cleanup_children)
     display = ':98'
 
-    # Wait for URL to be reachable (shows status on bar)
     wait_for_url(disp, url, quality)
 
     # Start Xvfb
@@ -495,7 +539,7 @@ def mode_url(disp, url, quality, fps):
     _child_procs.append(xvfb)
     time.sleep(1)
     if xvfb.poll() is not None:
-        log("ERROR: Xvfb failed")
+        log("ERROR: Xvfb failed to start")
         return
 
     env = os.environ.copy()
@@ -511,18 +555,25 @@ def mode_url(disp, url, quality, fps):
         cleanup_children()
         return
 
-    log(f"Launching {browser} -> {url}")
-    bp = subprocess.Popen([
-        browser, '--no-sandbox', '--disable-gpu',
-        '--disable-software-rasterizer', '--disable-dev-shm-usage',
-        '--disable-background-timer-throttling',
-        '--disable-renderer-backgrounding',
-        '--disable-backgrounding-occluded-windows',
-        f'--window-size={disp.w},{disp.h}', '--kiosk', '--hide-scrollbars',
-        '--autoplay-policy=no-user-gesture-required',
-        '--no-first-run', '--disable-translate',
-        url
-    ], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Run browser as the invoking user if we're root, for sandbox safety
+    browser_cmd = [browser, '--disable-gpu',
+                   '--disable-software-rasterizer', '--disable-dev-shm-usage',
+                   '--disable-background-timer-throttling',
+                   '--disable-renderer-backgrounding',
+                   '--disable-backgrounding-occluded-windows',
+                   f'--window-size={disp.w},{disp.h}', '--kiosk', '--hide-scrollbars',
+                   '--autoplay-policy=no-user-gesture-required',
+                   '--no-first-run', '--disable-translate', url]
+
+    if _sudo_user and os.getuid() == 0:
+        # Drop to unprivileged user for browser — avoids running Chrome as root
+        log(f"Launching {browser} as {_sudo_user} -> {url}")
+        browser_cmd = ['sudo', '-u', _sudo_user, f'DISPLAY={display}'] + browser_cmd
+        bp = subprocess.Popen(browser_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        log(f"Launching {browser} -> {url}")
+        bp = subprocess.Popen(browser_cmd, env=env,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     _child_procs.append(bp)
     time.sleep(3)
 
@@ -540,13 +591,15 @@ def mode_url(disp, url, quality, fps):
 
 # ── Mode: image ─────────────────────────────────────────────────────
 def mode_image(disp, path, quality):
+    if not os.path.isfile(path):
+        log(f"ERROR: File not found: {path}")
+        return
     img = Image.open(path).resize((disp.w, disp.h), Image.LANCZOS)
     jpeg = image_to_jpeg(img, quality)
     log(f"Image: {path} ({len(jpeg)//1024}KB)")
     while True:
         if not disp.send(jpeg):
             disp.wait_for_device()
-            # re-auth happened in wait_for_device
         time.sleep(5)
 
 # ── Mode: test ──────────────────────────────────────────────────────
@@ -568,7 +621,7 @@ def handle_sigterm(signum, frame):
     for f in [PIDFILE, STATEFILE]:
         try:
             os.unlink(f)
-        except FileNotFoundError:
+        except (FileNotFoundError, PermissionError):
             pass
     sys.exit(0)
 
@@ -621,12 +674,17 @@ def main():
             print("tinyscreen is not running.")
         else:
             try:
-                with open(STATEFILE) as f:
-                    st = json.load(f)
+                for path in [STATEFILE, '/tmp/tinyscreen.state']:
+                    if os.path.exists(path):
+                        with open(path) as f:
+                            st = json.load(f)
+                        break
+                else:
+                    st = {}
                 print(f"tinyscreen running (PID {pid})")
-                print(f"  Mode:    {st.get('mode')}")
-                print(f"  Target:  {st.get('target')}")
-                print(f"  Started: {st.get('started')}")
+                print(f"  Mode:    {st.get('mode', '?')}")
+                print(f"  Target:  {st.get('target', '?')}")
+                print(f"  Started: {st.get('started', '?')}")
             except Exception:
                 print(f"tinyscreen running (PID {pid})")
         print(f"  Log:     {LOGFILE}")
@@ -644,7 +702,6 @@ def main():
     else:
         mode, target = 'test', 'test pattern'
 
-    # Daemonize unless --fg
     if not args.fg:
         print(f"tinyscreen: {mode} -> {target}")
         print(f"  Log:  tail -f {LOGFILE}")
@@ -655,7 +712,6 @@ def main():
     write_pid()
     log(f"tinyscreen starting ({mode}: {target})")
 
-    # Connect to display (waits if not plugged in)
     disp = Display()
     disp.wait_for_device()
     write_state(mode, target)
@@ -681,7 +737,7 @@ def main():
         for f in [PIDFILE, STATEFILE]:
             try:
                 os.unlink(f)
-            except FileNotFoundError:
+            except (FileNotFoundError, PermissionError):
                 pass
         log("tinyscreen stopped.")
 

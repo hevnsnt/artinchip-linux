@@ -35,11 +35,11 @@ info "Checking dependencies..."
 
 install_pkg() {
     if command -v apt-get &>/dev/null; then
-        apt-get install -y "$@" 2>/dev/null
+        DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
     elif command -v dnf &>/dev/null; then
-        dnf install -y "$@" 2>/dev/null
+        dnf install -y "$@"
     elif command -v pacman &>/dev/null; then
-        pacman -S --noconfirm "$@" 2>/dev/null
+        pacman -S --noconfirm "$@"
     else
         warn "Unknown package manager — install manually: $*"
         return 1
@@ -54,9 +54,9 @@ fi
 
 # pip packages
 info "Installing Python packages..."
-python3 -m pip install --break-system-packages --quiet pyusb Pillow cryptography 2>/dev/null \
-    || python3 -m pip install --quiet pyusb Pillow cryptography 2>/dev/null \
-    || warn "pip install failed — you may need to install pyusb, Pillow, cryptography manually"
+python3 -m pip install --break-system-packages pyusb Pillow cryptography 2>&1 | tail -1 \
+    || python3 -m pip install pyusb Pillow cryptography 2>&1 | tail -1 \
+    || warn "pip install failed — install manually: pip install pyusb Pillow cryptography"
 
 # ffmpeg
 if ! command -v ffmpeg &>/dev/null; then
@@ -78,9 +78,9 @@ fi
 
 # yt-dlp (optional)
 if ! command -v yt-dlp &>/dev/null; then
-    info "Installing yt-dlp (for YouTube support)..."
-    python3 -m pip install --break-system-packages --quiet yt-dlp 2>/dev/null \
-        || python3 -m pip install --quiet yt-dlp 2>/dev/null \
+    info "Installing yt-dlp (optional, for YouTube support)..."
+    python3 -m pip install --break-system-packages yt-dlp 2>&1 | tail -1 \
+        || python3 -m pip install yt-dlp 2>&1 | tail -1 \
         || warn "yt-dlp not installed — YouTube mode won't work. Install with: pip install yt-dlp"
 fi
 
@@ -99,11 +99,11 @@ ln -sf "$INSTALL_DIR/tinyscreen" "$BIN_LINK"
 # ── udev rule ───────────────────────────────────────────────────────
 info "Installing udev rule..."
 cat > "$UDEV_RULE" << 'EOF'
-# ArtInChip USB Display devices — allow non-root access
-SUBSYSTEM=="usb", ATTR{idVendor}=="33c3", ATTR{idProduct}=="0e01", MODE="0666", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTR{idVendor}=="33c3", ATTR{idProduct}=="0e02", MODE="0666", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTR{idVendor}=="33c3", ATTR{idProduct}=="0e04", MODE="0666", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTR{idVendor}=="33c3", ATTR{idProduct}=="0e05", MODE="0666", TAG+="uaccess"
+# ArtInChip USB Display devices — allow session user access
+SUBSYSTEM=="usb", ATTR{idVendor}=="33c3", ATTR{idProduct}=="0e01", GROUP="plugdev", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="33c3", ATTR{idProduct}=="0e02", GROUP="plugdev", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="33c3", ATTR{idProduct}=="0e04", GROUP="plugdev", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="33c3", ATTR{idProduct}=="0e05", GROUP="plugdev", MODE="0660", TAG+="uaccess"
 EOF
 udevadm control --reload-rules 2>/dev/null
 udevadm trigger 2>/dev/null
@@ -139,8 +139,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Change the --url below to your dashboard URL
-ExecStart=/usr/bin/python3 /opt/tinyscreen/tinyscreen.py --url http://egon.local:8421/ --fg
+# >>> EDIT THIS: Change the URL to your dashboard <<<
+ExecStart=/usr/bin/python3 /opt/tinyscreen/tinyscreen.py --url http://YOUR-DASHBOARD-URL:PORT/ --fg
 Restart=on-failure
 RestartSec=5
 Environment=PATH=${FFMPEG_DIR}:${EXTRA_PATHS}
