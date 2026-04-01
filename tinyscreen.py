@@ -31,9 +31,9 @@ import socket
 import tempfile
 from urllib.parse import urlparse
 
-PIDFILE = '/run/tinyscreen.pid'
+PIDFILE = '/tmp/tinyscreen.pid'
 LOGFILE = '/tmp/tinyscreen.log'
-STATEFILE = '/run/tinyscreen.state'
+STATEFILE = '/tmp/tinyscreen.state'
 
 # ── PATH fixup (sudo drops user PATH) ──────────────────────────────
 _sudo_user = os.environ.get('SUDO_USER', '')
@@ -312,14 +312,11 @@ def wait_for_url(disp, url, quality=75):
 
 # ── Daemon management ───────────────────────────────────────────────
 def read_pid():
-    # Check both /run and /tmp for backwards compat
-    for path in [PIDFILE, '/tmp/tinyscreen.pid']:
-        try:
-            with open(path) as f:
-                return int(f.read().strip())
-        except (FileNotFoundError, ValueError):
-            continue
-    return None
+    try:
+        with open(PIDFILE) as f:
+            return int(f.read().strip())
+    except (FileNotFoundError, ValueError):
+        return None
 
 def is_running(pid):
     if pid is None:
@@ -330,79 +327,34 @@ def is_running(pid):
     except OSError:
         return False
 
-def _find_all_pids():
-    """Find all tinyscreen daemon PIDs via PID file + process scan."""
-    pids = set()
-    # From PID files
-    pid = read_pid()
-    if is_running(pid):
-        pids.add(pid)
-    # Scan /proc for any other tinyscreen.py processes (catches orphans)
-    my_pid = os.getpid()
-    my_ppid = os.getppid()
-    try:
-        for entry in os.listdir('/proc'):
-            if not entry.isdigit():
-                continue
-            p = int(entry)
-            if p == my_pid or p == my_ppid:
-                continue
-            try:
-                with open(f'/proc/{p}/cmdline', 'rb') as f:
-                    cmdline = f.read().decode(errors='replace')
-                if 'tinyscreen.py' in cmdline and ('--sysmon' in cmdline or '--url' in cmdline
-                        or '--video' in cmdline or '--test' in cmdline or '--image' in cmdline):
-                    pids.add(p)
-            except (FileNotFoundError, PermissionError):
-                pass
-    except Exception:
-        pass
-    return pids
-
 def stop_existing():
-    pids = _find_all_pids()
-    if not pids:
+    pid = read_pid()
+    if not is_running(pid):
         return
-    for pid in pids:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            pass
+    os.kill(pid, signal.SIGTERM)
     for _ in range(30):
-        if not any(is_running(p) for p in pids):
+        if not is_running(pid):
             break
         time.sleep(0.1)
     else:
-        for pid in pids:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
-    for f in [PIDFILE, STATEFILE, '/tmp/tinyscreen.pid', '/tmp/tinyscreen.state']:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    for f in [PIDFILE, STATEFILE]:
         try:
             os.unlink(f)
         except (FileNotFoundError, PermissionError):
             pass
 
 def write_pid():
-    try:
-        with open(PIDFILE, 'w') as f:
-            f.write(str(os.getpid()))
-    except PermissionError:
-        # Fall back to /tmp if /run isn't writable
-        with open('/tmp/tinyscreen.pid', 'w') as f:
-            f.write(str(os.getpid()))
+    with open(PIDFILE, 'w') as f:
+        f.write(str(os.getpid()))
 
 def write_state(mode, target):
-    try:
-        path = STATEFILE
-        with open(path, 'w') as f:
-            json.dump({'mode': mode, 'target': target, 'pid': os.getpid(),
-                       'started': time.strftime('%Y-%m-%d %H:%M:%S')}, f)
-    except PermissionError:
-        with open('/tmp/tinyscreen.state', 'w') as f:
-            json.dump({'mode': mode, 'target': target, 'pid': os.getpid(),
-                       'started': time.strftime('%Y-%m-%d %H:%M:%S')}, f)
+    with open(STATEFILE, 'w') as f:
+        json.dump({'mode': mode, 'target': target, 'pid': os.getpid(),
+                   'started': time.strftime('%Y-%m-%d %H:%M:%S')}, f)
 
 def daemonize():
     if os.fork() > 0:
@@ -712,29 +664,23 @@ def main():
 
     # --off
     if args.off:
-        pids = _find_all_pids()
-        if not pids:
+        pid = read_pid()
+        if not is_running(pid):
             print("tinyscreen is not running.")
             return
         stop_existing()
-        print(f"tinyscreen stopped ({len(pids)} process{'es' if len(pids) > 1 else ''}).")
+        print("tinyscreen stopped.")
         return
 
     # --status
     if args.status:
-        pids = _find_all_pids()
-        if not pids:
+        pid = read_pid()
+        if not is_running(pid):
             print("tinyscreen is not running.")
         else:
-            pid = next(iter(pids))
             try:
-                for path in [STATEFILE, '/tmp/tinyscreen.state']:
-                    if os.path.exists(path):
-                        with open(path) as f:
-                            st = json.load(f)
-                        break
-                else:
-                    st = {}
+                with open(STATEFILE) as f:
+                    st = json.load(f)
                 print(f"tinyscreen running (PID {pid})")
                 print(f"  Mode:    {st.get('mode', '?')}")
                 print(f"  Target:  {st.get('target', '?')}")
