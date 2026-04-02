@@ -572,24 +572,11 @@ def cleanup_children():
     _child_procs.clear()
 
 def mode_url(disp, url, quality, fps):
-    """Run a live virtual display with a browser pointed at url."""
+    """Run a live virtual display with a browser pointed at url.
+    Uses xvfb-run for proper GL context setup."""
     atexit.register(cleanup_children)
-    display = ':98'
 
     wait_for_url(disp, url, quality)
-
-    # Start Xvfb
-    xvfb = subprocess.Popen(
-        ['Xvfb', display, '-screen', '0', f'{disp.w}x{disp.h}x24', '-ac', '-nolisten', 'tcp'],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    _child_procs.append(xvfb)
-    time.sleep(1)
-    if xvfb.poll() is not None:
-        log("ERROR: Xvfb failed to start")
-        return
-
-    env = os.environ.copy()
-    env['DISPLAY'] = display
 
     browser = None
     for b in ['chromium', 'chromium-browser', 'google-chrome']:
@@ -598,30 +585,26 @@ def mode_url(disp, url, quality, fps):
             break
     if not browser:
         log("ERROR: No browser found (chromium/google-chrome)")
-        cleanup_children()
         return
 
-    # Run browser as the invoking user if we're root, for sandbox safety
-    browser_cmd = [browser, '--disable-gpu',
-                   '--disable-software-rasterizer', '--disable-dev-shm-usage',
-                   '--disable-background-timer-throttling',
-                   '--disable-renderer-backgrounding',
-                   '--disable-backgrounding-occluded-windows',
-                   f'--window-size={disp.w},{disp.h}', '--kiosk', '--hide-scrollbars',
-                   '--autoplay-policy=no-user-gesture-required',
-                   '--no-first-run', '--disable-translate', url]
+    # Use xvfb-run to launch browser — handles GL context properly
+    display = ':98'
+    browser_cmd = [
+        'xvfb-run', '-a', '--server-num=98',
+        f'--server-args=-screen 0 {disp.w}x{disp.h}x24 -ac',
+        browser, '--no-sandbox', '--disable-dev-shm-usage',
+        '--disable-background-timer-throttling',
+        '--disable-renderer-backgrounding',
+        '--disable-backgrounding-occluded-windows',
+        f'--window-size={disp.w},{disp.h}', '--kiosk', '--hide-scrollbars',
+        '--autoplay-policy=no-user-gesture-required',
+        '--no-first-run', '--disable-translate', url
+    ]
 
-    if _sudo_user and os.getuid() == 0:
-        # Drop to unprivileged user for browser — avoids running Chrome as root
-        log(f"Launching {browser} as {_sudo_user} -> {url}")
-        browser_cmd = ['sudo', '-u', _sudo_user, f'DISPLAY={display}'] + browser_cmd
-        bp = subprocess.Popen(browser_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    else:
-        log(f"Launching {browser} -> {url}")
-        bp = subprocess.Popen(browser_cmd, env=env,
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    log(f"Launching {browser} via xvfb-run -> {url}")
+    bp = subprocess.Popen(browser_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     _child_procs.append(bp)
-    time.sleep(3)
+    time.sleep(5)  # Give browser time to render first frame
 
     log(f"Streaming {display} at {fps}fps")
     ffmpeg_cmd = [
