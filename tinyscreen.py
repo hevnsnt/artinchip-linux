@@ -344,14 +344,63 @@ def is_running(pid):
     except OSError:
         return False
 
-def stop_existing():
-    """Kill all running tinyscreen.py processes (except ourselves)."""
+def _find_other_pids():
+    """Find tinyscreen.py PIDs other than our own process tree."""
     my_pid = os.getpid()
-    # Use pkill — simple and reliable
-    subprocess.run(['pkill', '-f', 'tinyscreen.py'], capture_output=True)
+    my_ppid = os.getppid()
+    pids = []
+    try:
+        result = subprocess.run(['pgrep', '-f', 'tinyscreen.py'],
+                                capture_output=True, text=True)
+        for line in result.stdout.strip().split('\n'):
+            if not line:
+                continue
+            pid = int(line)
+            if pid != my_pid and pid != my_ppid:
+                pids.append(pid)
+    except Exception:
+        pass
+    return pids
+
+def _stop_others():
+    """Kill other tinyscreen.py processes."""
+    pids = _find_other_pids()
+    if not pids:
+        print("tinyscreen is not running.")
+        return
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
     time.sleep(0.3)
-    # Force kill any survivors
-    subprocess.run(['pkill', '-9', '-f', 'tinyscreen.py'], capture_output=True)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    for f in [PIDFILE, STATEFILE]:
+        try:
+            os.unlink(f)
+        except (FileNotFoundError, PermissionError):
+            pass
+    print(f"tinyscreen stopped ({len(pids)} process{'es' if len(pids) != 1 else ''}).")
+
+def stop_existing():
+    """Kill other tinyscreen.py processes (silent version for mode switching)."""
+    pids = _find_other_pids()
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    if pids:
+        time.sleep(0.3)
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
     for f in [PIDFILE, STATEFILE]:
         try:
             os.unlink(f)
@@ -838,19 +887,7 @@ def main():
 
     # --off
     if args.off:
-        result = subprocess.run(['pgrep', '-f', 'tinyscreen.py'], capture_output=True)
-        if result.returncode != 0:
-            print("tinyscreen is not running.")
-            return
-        subprocess.run(['pkill', '-f', 'tinyscreen.py'], capture_output=True)
-        time.sleep(0.3)
-        subprocess.run(['pkill', '-9', '-f', 'tinyscreen.py'], capture_output=True)
-        for f in [PIDFILE, STATEFILE]:
-            try:
-                os.unlink(f)
-            except (FileNotFoundError, PermissionError):
-                pass
-        print("tinyscreen stopped.")
+        _stop_others()
         return
 
     # --status
