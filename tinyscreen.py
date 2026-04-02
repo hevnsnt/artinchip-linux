@@ -643,28 +643,48 @@ def mode_url(disp, url, quality, fps):
         return
 
     import base64
-    log(f"Streaming URL at ~{fps}fps via CDP screenshots")
-    interval = 1.0 / min(fps, 10)  # cap at 10fps for screenshots
+
+    # Use CDP Page.startScreencast for real-time 60fps frame streaming.
+    # Chromium pushes every rendered frame to us instead of us polling screenshots.
+    log(f"Starting CDP screencast (60fps real-time) -> USB display")
+    ws.send(_json.dumps({
+        "id": 1,
+        "method": "Page.startScreencast",
+        "params": {
+            "format": "jpeg",
+            "quality": quality,
+            "maxWidth": w,
+            "maxHeight": h,
+            "everyNthFrame": 1
+        }
+    }))
+
     frame_id = 0
-    msg_id = 1
+    msg_id = 100
 
     try:
         while True:
             try:
-                ws.send(_json.dumps({
-                    "id": msg_id,
-                    "method": "Page.captureScreenshot",
-                    "params": {"format": "jpeg", "quality": quality}
-                }))
-                resp = _json.loads(ws.recv())
-                msg_id += 1
+                raw = ws.recv()
+                msg = _json.loads(raw)
 
-                if 'result' in resp and 'data' in resp['result']:
-                    jpeg_data = base64.b64decode(resp['result']['data'])
+                if msg.get('method') == 'Page.screencastFrame':
+                    jpeg_data = base64.b64decode(msg['params']['data'])
+                    session_id = msg['params']['sessionId']
+
+                    # Acknowledge frame so chromium sends the next one
+                    ws.send(_json.dumps({
+                        "id": msg_id,
+                        "method": "Page.screencastFrameAck",
+                        "params": {"sessionId": session_id}
+                    }))
+                    msg_id += 1
+
                     if not disp.send(jpeg_data):
                         disp.wait_for_device()
+
                     frame_id += 1
-                    if frame_id % 60 == 1:
+                    if frame_id % 300 == 1:
                         log(f"URL frame {frame_id}, {len(jpeg_data)//1024}KB")
 
             except (_ws.WebSocketException, ConnectionError, BrokenPipeError):
@@ -674,19 +694,23 @@ def mode_url(disp, url, quality, fps):
                     tabs = _req.get(f'http://localhost:{cdp_port}/json', timeout=2).json()
                     ws_url = tabs[0]['webSocketDebuggerUrl']
                     ws = _ws.create_connection(ws_url, timeout=5)
+                    ws.send(_json.dumps({
+                        "id": 1, "method": "Page.startScreencast",
+                        "params": {"format": "jpeg", "quality": quality,
+                                   "maxWidth": w, "maxHeight": h, "everyNthFrame": 1}
+                    }))
                 except Exception:
-                    log("CDP reconnect failed, restarting browser...")
+                    log("CDP reconnect failed")
                     break
             except Exception as e:
                 log(f"URL error: {e}")
-
-            time.sleep(interval)
+                time.sleep(0.1)
     finally:
-        if ws:
-            try:
-                ws.close()
-            except Exception:
-                pass
+        try:
+            ws.send(_json.dumps({"id": 999, "method": "Page.stopScreencast"}))
+            ws.close()
+        except Exception:
+            pass
         cleanup_children()
 
 # ── Mode: image ─────────────────────────────────────────────────────
