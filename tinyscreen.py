@@ -572,9 +572,9 @@ def cleanup_children():
     _child_procs.clear()
 
 def mode_url(disp, url, quality, fps):
-    """Display a website using headless chromium screenshots in a loop.
-    Takes a screenshot every ~1 second, sends to the display.
-    For live dashboards this is plenty — the page JS keeps running between shots."""
+    """Display a website using a persistent headless chromium with CDP screenshots.
+    Chromium stays running (JS keeps executing), screenshots taken via WebSocket."""
+    atexit.register(cleanup_children)
 
     wait_for_url(disp, url, quality)
 
@@ -588,43 +588,98 @@ def mode_url(disp, url, quality, fps):
         return
 
     w, h = disp.w, disp.h
-    screenshot_path = '/tmp/tinyscreen_screenshot.png'
-    interval = max(1.0, 1.0 / fps * 10)  # ~1-2 seconds between shots
+    cdp_port = 9222
 
-    log(f"URL mode: {browser} headless screenshots @ ~{1/interval:.1f}fps -> {url}")
+    # Start persistent headless chromium with CDP
+    log(f"Starting {browser} headless + CDP on port {cdp_port} -> {url}")
+    chrome_proc = subprocess.Popen([
+        'xvfb-run', '-a', f'--server-args=-screen 0 {w}x{h}x24',
+        browser, '--headless=new', '--no-sandbox', '--disable-gpu',
+        f'--remote-debugging-port={cdp_port}',
+        f'--window-size={w},{h}', '--hide-scrollbars',
+        '--force-device-scale-factor=1',
+        '--disable-background-timer-throttling',
+        url
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _child_procs.append(chrome_proc)
 
-    frame_id = 0
-    while True:
+    # Wait for CDP to be ready
+    import json as _json
+    try:
+        import requests as _req
+    except ImportError:
+        log("ERROR: requests library required for URL mode")
+        return
+    try:
+        import websocket as _ws
+    except ImportError:
+        log("ERROR: websocket-client library required. Install: pip install websocket-client")
+        return
+
+    ws = None
+    for attempt in range(20):
+        time.sleep(1)
         try:
-            # Take headless screenshot via xvfb-run
-            result = subprocess.run([
-                'xvfb-run', '-a',
-                f'--server-args=-screen 0 {w}x{h}x24',
-                browser, '--headless', '--no-sandbox', '--disable-gpu',
-                f'--window-size={w},{h}', '--hide-scrollbars',
-                f'--screenshot={screenshot_path}',
-                '--force-device-scale-factor=1',
-                url
-            ], capture_output=True, timeout=15)
+            tabs = _req.get(f'http://localhost:{cdp_port}/json', timeout=2).json()
+            if tabs:
+                ws_url = tabs[0]['webSocketDebuggerUrl']
+                ws = _ws.create_connection(ws_url, timeout=5)
+                log(f"CDP connected: {ws_url}")
+                break
+        except Exception:
+            if attempt % 5 == 4:
+                log(f"Waiting for CDP... ({attempt+1}s)")
+    if not ws:
+        log("ERROR: CDP failed to start after 20 seconds")
+        cleanup_children()
+        return
 
-            if os.path.exists(screenshot_path):
-                img = Image.open(screenshot_path)
-                img = img.resize((w, h), Image.LANCZOS)
-                jpeg = image_to_jpeg(img, quality)
+    import base64
+    log(f"Streaming URL at ~{fps}fps via CDP screenshots")
+    interval = 1.0 / min(fps, 10)  # cap at 10fps for screenshots
+    frame_id = 0
+    msg_id = 1
 
-                if not disp.send(jpeg):
-                    disp.wait_for_device()
+    try:
+        while True:
+            try:
+                ws.send(_json.dumps({
+                    "id": msg_id,
+                    "method": "Page.captureScreenshot",
+                    "params": {"format": "jpeg", "quality": quality}
+                }))
+                resp = _json.loads(ws.recv())
+                msg_id += 1
 
-                frame_id += 1
-                if frame_id % 30 == 1:
-                    log(f"URL frame {frame_id}, {len(jpeg)//1024}KB")
+                if 'result' in resp and 'data' in resp['result']:
+                    jpeg_data = base64.b64decode(resp['result']['data'])
+                    if not disp.send(jpeg_data):
+                        disp.wait_for_device()
+                    frame_id += 1
+                    if frame_id % 60 == 1:
+                        log(f"URL frame {frame_id}, {len(jpeg_data)//1024}KB")
 
-        except subprocess.TimeoutExpired:
-            log("Screenshot timed out, retrying...")
-        except Exception as e:
-            log(f"URL error: {e}")
+            except (_ws.WebSocketException, ConnectionError, BrokenPipeError):
+                log("CDP connection lost, reconnecting...")
+                time.sleep(2)
+                try:
+                    tabs = _req.get(f'http://localhost:{cdp_port}/json', timeout=2).json()
+                    ws_url = tabs[0]['webSocketDebuggerUrl']
+                    ws = _ws.create_connection(ws_url, timeout=5)
+                except Exception:
+                    log("CDP reconnect failed, restarting browser...")
+                    break
+            except Exception as e:
+                log(f"URL error: {e}")
 
-        time.sleep(interval)
+            time.sleep(interval)
+    finally:
+        if ws:
+            try:
+                ws.close()
+            except Exception:
+                pass
+        cleanup_children()
 
 # ── Mode: image ─────────────────────────────────────────────────────
 def mode_image(disp, path, quality):
