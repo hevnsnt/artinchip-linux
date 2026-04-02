@@ -251,9 +251,9 @@ def render_frame(w=1920, h=440):
     p1w = int(w * 0.40)
     _draw_panel(draw, pad, py0, p1w, ph, "CLOCK")
 
-    # Time — massive centered display
+    # Time — massive centered display (12-hour format)
     now_t = time.localtime()
-    time_str = time.strftime("%H:%M:%S", now_t)
+    time_str = time.strftime("%-I:%M:%S %p", now_t)
 
     # Measure text to center it
     time_font = font(120)
@@ -292,8 +292,10 @@ def render_frame(w=1920, h=440):
     wy = dy + 42
     draw.text((wx, wy), week_str, fill=TEXT_DIM, font=wf)
 
-    # Timezone
-    tz_str = time.strftime("%Z (UTC%z)", now_t)
+    # Timezone — clearly show abbreviation (e.g. CDT, CST, EST, PST)
+    tz_abbr = time.strftime("%Z", now_t)  # e.g. "CDT" or "CST"
+    tz_offset = time.strftime("UTC%z", now_t)  # e.g. "UTC-0500"
+    tz_str = f"{tz_abbr}  ({tz_offset})"
     tzf = font(16)
     bbox_tz = draw.textbbox((0, 0), tz_str, font=tzf)
     tzw = bbox_tz[2] - bbox_tz[0]
