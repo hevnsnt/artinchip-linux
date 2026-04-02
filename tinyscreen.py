@@ -362,8 +362,14 @@ def _find_other_pids():
         pass
     return pids
 
+def _kill_tinyscreen_children():
+    """Kill orphaned Xvfb, xvfb-run, and headless chromium from tinyscreen."""
+    for pattern in ['xvfb-run.*tinyscreen', 'chromium.*remote-debugging-port=9222',
+                    'Xvfb :98', 'Xvfb :99', 'Xvfb :10']:
+        subprocess.run(['pkill', '-9', '-f', pattern], capture_output=True)
+
 def _stop_others():
-    """Kill other tinyscreen.py processes."""
+    """Kill other tinyscreen.py processes and their children."""
     pids = _find_other_pids()
     if not pids:
         print("tinyscreen is not running.")
@@ -373,21 +379,22 @@ def _stop_others():
             os.kill(pid, signal.SIGTERM)
         except OSError:
             pass
-    time.sleep(0.3)
+    time.sleep(0.5)
     for pid in pids:
         try:
             os.kill(pid, signal.SIGKILL)
         except OSError:
             pass
+    _kill_tinyscreen_children()
     for f in [PIDFILE, STATEFILE]:
         try:
             os.unlink(f)
         except (FileNotFoundError, PermissionError):
             pass
-    print(f"tinyscreen stopped ({len(pids)} process{'es' if len(pids) != 1 else ''}).")
+    print(f"tinyscreen stopped.")
 
 def stop_existing():
-    """Kill other tinyscreen.py processes (silent version for mode switching)."""
+    """Kill other tinyscreen.py processes and children (silent, for mode switching)."""
     pids = _find_other_pids()
     for pid in pids:
         try:
@@ -395,12 +402,13 @@ def stop_existing():
         except OSError:
             pass
     if pids:
-        time.sleep(0.3)
+        time.sleep(0.5)
         for pid in pids:
             try:
                 os.kill(pid, signal.SIGKILL)
             except OSError:
                 pass
+    _kill_tinyscreen_children()
     for f in [PIDFILE, STATEFILE]:
         try:
             os.unlink(f)
