@@ -598,12 +598,12 @@ def mode_url(disp, url, quality, fps):
     w, h = disp.w, disp.h
     cdp_port = 9222
 
-    # Start persistent headless chromium with CDP
+    # Start persistent headless chromium with CDP (no X server needed)
     log(f"Starting {browser} headless + CDP on port {cdp_port} -> {url}")
     chrome_proc = subprocess.Popen([
-        'xvfb-run', '-a', f'--server-args=-screen 0 {w}x{h}x24',
         browser, '--headless=new', '--no-sandbox', '--disable-gpu',
         f'--remote-debugging-port={cdp_port}',
+        '--remote-allow-origins=*',
         f'--window-size={w},{h}', '--hide-scrollbars',
         '--force-device-scale-factor=1',
         '--disable-background-timer-throttling',
