@@ -325,18 +325,20 @@ def _init_clouds(pw: int, ph: int, condition: str):
 def _init_fog(pw: int, ph: int):
     global _fog_bands, _fog_inited
     _fog_bands = []
-    # Many thin horizontal layers that overlap to create soft depth
-    for i in range(40):
+    # Large soft fog puffs at different depths
+    for i in range(20):
         _fog_bands.append({
-            'y_frac': random.uniform(0.0, 1.0),
-            'x_offset': random.uniform(0, pw),
-            'speed': random.uniform(0.08, 0.35) * (1 if random.random() > 0.3 else -1),
-            'thickness': random.uniform(15, 60),
-            'opacity': random.uniform(0.08, 0.25),
+            'x': random.uniform(-0.2, 1.2) * pw,
+            'y': random.uniform(0.1, 0.95) * ph,
+            'rx': random.uniform(120, 350),   # horizontal radius
+            'ry': random.uniform(40, 100),     # vertical radius (wide and flat)
+            'speed': random.uniform(0.15, 0.6) * random.choice([-1, 1]),
+            'opacity': random.uniform(0.04, 0.12),
             'phase': random.uniform(0, math.tau),
-            'wave_amp': random.uniform(5, 20),
-            'wave_freq': random.uniform(0.1, 0.4),
+            'depth': random.uniform(0.3, 1.0),  # 0=far, 1=near
         })
+    # Sort by depth so far puffs draw first
+    _fog_bands.sort(key=lambda b: b['depth'])
     _fog_inited = True
 
 
@@ -660,57 +662,26 @@ def _render_overcast(scene: Image.Image, draw: ImageDraw.Draw,
                      pw: int, ph: int, t: float, pal: dict, condition: str):
     global _fog_inited
 
-    # Overcast uses the same soft fog technique but with heavier cloud layers at top
     if not _fog_inited:
         _init_fog(pw, ph)
 
     cloud_layer = Image.new('RGBA', (pw, ph), (0, 0, 0, 0))
     c_draw = ImageDraw.Draw(cloud_layer)
 
-    # Heavy cloud ceiling — dense overlapping layers in top 40%
-    for i in range(12):
-        y_center = ph * (0.05 + i * 0.03) + math.sin(t * 0.15 + i * 1.2) * 10
-        speed = 0.2 + i * 0.03
-        x_drift = (t * speed * 8 + i * 40) % (pw + 100) - 50
-        thickness = 30 + i * 5
-        for dy in range(-thickness//2, thickness//2 + 1, 2):
-            edge = abs(dy) / max(thickness//2, 1)
-            a = int(40 * (1.0 - edge * edge))
-            if a < 2:
-                continue
-            y_line = int(y_center + dy)
-            if 0 <= y_line < ph:
-                shade = 45 + int(15 * (i / 12))
-                c_draw.line([(0, y_line), (pw - 1, y_line)],
-                           fill=(shade, shade + 4, shade + 14, a))
+    # Dense cloud ceiling — large soft puffs across the top half
+    for i in range(8):
+        cx = (t * (0.3 + i * 0.08) * 15 + i * pw // 5) % (pw + 400) - 200
+        cy = ph * (0.1 + i * 0.04) + math.sin(t * 0.2 + i * 1.5) * 12
+        rx = 200 + i * 20
+        ry = 50 + i * 5
+        shade = 35 + i * 4
+        _draw_soft_ellipse(c_draw, int(cx), int(cy), int(rx), int(ry),
+                          (shade, shade + 4, shade + 12), 30 + i * 3, steps=5)
 
     scene.alpha_composite(cloud_layer)
 
-    # Add drifting fog bands below the clouds
-    fog_layer = Image.new('RGBA', (pw, ph), (0, 0, 0, 0))
-    f_draw = ImageDraw.Draw(fog_layer)
-
-    for band in _fog_bands:
-        band['x_offset'] += band['speed'] * 0.3
-        y_center = band['y_frac'] * ph + math.sin(t * band['wave_freq'] + band['phase']) * band['wave_amp']
-        thickness = band['thickness']
-        depth_boost = 0.4 + 0.6 * band['y_frac']
-        alpha = int(255 * band['opacity'] * depth_boost * 0.7)
-        alpha = max(5, min(45, alpha))
-        base_shade = 40 + int(20 * band['y_frac'])
-        c = (base_shade, base_shade + 3, base_shade + 10)
-        half_h = max(1, int(thickness / 2))
-        for dy in range(-half_h, half_h + 1, 2):
-            edge_dist = abs(dy) / max(half_h, 1)
-            line_alpha = int(alpha * (1.0 - edge_dist * edge_dist))
-            if line_alpha < 2:
-                continue
-            y_line = int(y_center + dy)
-            if 0 <= y_line < ph:
-                f_draw.line([(0, y_line), (pw - 1, y_line)],
-                           fill=(c[0], c[1], c[2], line_alpha))
-
-    scene.alpha_composite(fog_layer)
+    # Lower fog puffs using same system as fog mode
+    _render_fog(scene, draw, pw, ph, t, pal)
 
 
 # ── Rain ─────────────────────────────────────────────────────────────
@@ -987,6 +958,18 @@ def _render_snow(scene: Image.Image, draw: ImageDraw.Draw,
 
 # ── Fog / Mist / Haze ───────────────────────────────────────────────
 
+def _draw_soft_ellipse(draw, cx, cy, rx, ry, color, alpha, steps=6):
+    """Draw a soft-edged ellipse using concentric rings that fade outward."""
+    for i in range(steps, 0, -1):
+        frac = i / steps
+        a = int(alpha * frac * frac)  # quadratic falloff
+        if a < 2:
+            continue
+        srx = int(rx * (1.0 + (1.0 - frac) * 0.5))  # outer rings are bigger
+        sry = int(ry * (1.0 + (1.0 - frac) * 0.5))
+        draw.ellipse([cx - srx, cy - sry, cx + srx, cy + sry],
+                     fill=(color[0], color[1], color[2], a))
+
 def _render_fog(scene: Image.Image, draw: ImageDraw.Draw,
                 pw: int, ph: int, t: float, pal: dict):
     global _fog_inited
@@ -994,58 +977,36 @@ def _render_fog(scene: Image.Image, draw: ImageDraw.Draw,
     if not _fog_inited:
         _init_fog(pw, ph)
 
-    # Each fog band is a full-width horizontal stripe with soft edges.
-    # Many overlapping semi-transparent stripes create a natural layered look.
     fog_layer = Image.new('RGBA', (pw, ph), (0, 0, 0, 0))
     f_draw = ImageDraw.Draw(fog_layer)
 
-    for band in _fog_bands:
-        # Drift
-        band['x_offset'] += band['speed']
+    for puff in _fog_bands:
+        # Drift horizontally
+        puff['x'] += puff['speed']
+        # Wrap around
+        if puff['x'] > pw + puff['rx']:
+            puff['x'] = -puff['rx']
+        elif puff['x'] < -puff['rx']:
+            puff['x'] = pw + puff['rx']
 
-        # Vertical position undulates gently
-        y_center = band['y_frac'] * ph + math.sin(t * band['wave_freq'] + band['phase']) * band['wave_amp']
-        thickness = band['thickness'] + math.sin(t * 0.2 + band['phase'] * 2) * 8
+        # Gentle vertical bob
+        cx = puff['x']
+        cy = puff['y'] + math.sin(t * 0.2 + puff['phase']) * 15
+        rx = puff['rx'] + math.sin(t * 0.15 + puff['phase'] * 2) * 20
+        ry = puff['ry'] + math.sin(t * 0.25 + puff['phase']) * 8
 
-        # Deeper = more opaque (bottom of panel is thicker fog)
-        depth_boost = 0.6 + 0.4 * band['y_frac']
-        pulse = 1.0 + 0.15 * math.sin(t * 0.3 + band['phase'] * 1.5)
-        alpha = int(255 * band['opacity'] * depth_boost * pulse)
-        alpha = max(8, min(60, alpha))
+        # Opacity pulses gently
+        opacity = puff['opacity'] * (1.0 + 0.2 * math.sin(t * 0.3 + puff['phase'] * 1.5))
+        # Nearer puffs (higher depth) are brighter
+        shade = int(50 + 30 * puff['depth'])
+        color = (shade, shade + 5, shade + 15)
+        alpha = int(255 * opacity * puff['depth'])
+        alpha = max(4, min(40, alpha))
 
-        # Color: subtle blue-grey, slightly lighter near bottom
-        base_shade = 55 + int(25 * band['y_frac'])
-        c = (base_shade, base_shade + 4, base_shade + 12)
-
-        # Draw as a series of horizontal lines with feathered opacity
-        # This creates soft edges instead of hard rectangles
-        half_h = max(1, int(thickness / 2))
-        for dy in range(-half_h, half_h + 1, 2):
-            # Feather: opacity falls off toward edges of the band
-            edge_dist = abs(dy) / max(half_h, 1)
-            line_alpha = int(alpha * (1.0 - edge_dist * edge_dist))
-            if line_alpha < 3:
-                continue
-            y_line = int(y_center + dy)
-            if y_line < 0 or y_line >= ph:
-                continue
-            # Horizontal offset for drift
-            x_drift = int(band['x_offset'] + math.sin(t * 0.15 + dy * 0.01 + band['phase']) * 15)
-            f_draw.line([(0, y_line), (pw - 1, y_line)],
-                       fill=(c[0], c[1], c[2], line_alpha))
+        _draw_soft_ellipse(f_draw, int(cx), int(cy), int(rx), int(ry),
+                          color, alpha, steps=5)
 
     scene.alpha_composite(fog_layer)
-
-    # Overall atmospheric haze that builds toward bottom
-    haze = Image.new('RGBA', (pw, ph), (0, 0, 0, 0))
-    h_draw = ImageDraw.Draw(haze)
-    for y in range(ph):
-        frac = y / max(ph - 1, 1)
-        a = int(20 * frac * frac + 5 * math.sin(t * 0.4 + y * 0.015))
-        a = max(0, min(35, a))
-        if a > 0:
-            h_draw.line([(0, y), (pw - 1, y)], fill=(50, 54, 68, a))
-    scene.alpha_composite(haze)
 
 
 # ── Partly Cloudy ────────────────────────────────────────────────────
