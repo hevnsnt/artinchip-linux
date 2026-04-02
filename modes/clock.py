@@ -1285,7 +1285,7 @@ def _read_cpu_pct() -> float:
         d_total = total - _read_cpu_pct._prev[1]
         _read_cpu_pct._prev = (idle, total)
         raw = 100.0 * (1.0 - d_idle / d_total) if d_total > 0 else 0.0
-        _cpu_smooth = _cpu_smooth * 0.7 + raw * 0.3
+        _cpu_smooth = _cpu_smooth * 0.92 + raw * 0.08
         return _cpu_smooth
     except Exception:
         return 0.0
@@ -1383,11 +1383,7 @@ def _draw_bar(draw: ImageDraw.Draw, x: int, y: int, w: int, h: int,
 # ---------------------------------------------------------------------------
 
 def _render_clock_panel(draw: ImageDraw.Draw, x: int, y: int, w: int, h: int):
-    """Render the clock panel with dark background, cyan time, date, timezone."""
-    # Panel background
-    draw.rectangle([x, y, x + w, y + h], fill=PANEL_BG, outline=BORDER)
-    # Top accent line
-    draw.rectangle([x, y, x + w, y + 1], fill=ACCENT_DIM)
+    """Render clock panel text (background drawn separately as overlay)."""
 
     now_t = time.localtime()
     cx = x + w // 2  # horizontal center of panel
@@ -1478,10 +1474,6 @@ def _render_clock_panel(draw: ImageDraw.Draw, x: int, y: int, w: int, h: int):
 
 def _render_sysinfo_panel(draw: ImageDraw.Draw, x: int, y: int, w: int, h: int):
     """Render system info panel with hostname, uptime, CPU, RAM, IP, load, kernel."""
-    # Panel background
-    draw.rectangle([x, y, x + w, y + h], fill=PANEL_BG, outline=BORDER)
-    draw.rectangle([x, y, x + w, y + 1], fill=ACCENT_DIM)
-
     margin = 12
     sx = x + margin
     bar_w = w - margin * 2
@@ -1566,54 +1558,64 @@ def render_frame(w: int = 1920, h: int = 440) -> Image.Image:
     if now - _weather_last_fetch >= WEATHER_INTERVAL:
         _fetch_weather()
 
-    img = Image.new('RGB', (w, h), BG)
-    draw = ImageDraw.Draw(img)
-
     pad = 6
     py0 = pad
     ph = h - pad * 2
-
-    # ═══════════════════════════════════════════════════════════════
-    # Panel 1: Clock (left 40%)
-    # ═══════════════════════════════════════════════════════════════
     p1w = int(w * 0.40)
-    _render_clock_panel(draw, pad, py0, p1w, ph)
-
-    # ═══════════════════════════════════════════════════════════════
-    # Panel 2: Weather (middle 30%) — THE STAR
-    # ═══════════════════════════════════════════════════════════════
     p2x = pad + p1w + pad
     p2w = int(w * 0.30)
+    p3x = p2x + p2w + pad
+    p3w = w - p3x - pad
 
+    # ═══════════════════════════════════════════════════════════════
+    # Step 1: Render weather atmosphere across the FULL screen
+    # ═══════════════════════════════════════════════════════════════
+    condition = ''
+    temp_f = None
     if _weather:
         condition = _weather.get('condition', 'Unknown')
         temp_f = _weather.get('temp_f')
 
-        # Render weather scene as RGBA, then paste onto main image
+    if condition:
         try:
-            scene = _render_weather_scene(p2w, ph, condition, temp_f)
-            # Convert RGBA scene to RGB for pasting
-            scene_rgb = Image.new('RGB', (p2w, ph), BG)
-            scene_rgb.paste(scene, (0, 0), scene)
-            img.paste(scene_rgb, (p2x, py0))
+            scene = _render_weather_scene(w, h, condition, temp_f)
+            img = Image.new('RGB', (w, h), BG)
+            img.paste(scene, (0, 0), scene)
         except Exception:
-            # Fallback: dark panel
-            draw.rectangle([p2x, py0, p2x + p2w, py0 + ph],
-                           fill=PANEL_BG, outline=BORDER)
+            img = Image.new('RGB', (w, h), BG)
+    else:
+        img = Image.new('RGB', (w, h), BG)
 
-        # Panel border on top
-        draw.rectangle([p2x, py0, p2x + p2w, py0], fill=ACCENT_DIM)
-        draw.rectangle([p2x, py0, p2x, py0 + ph], fill=BORDER)
-        draw.rectangle([p2x + p2w, py0, p2x + p2w, py0 + ph], fill=BORDER)
-        draw.rectangle([p2x, py0 + ph, p2x + p2w, py0 + ph], fill=BORDER)
+    draw = ImageDraw.Draw(img)
 
-        # Text overlay
+    # ═══════════════════════════════════════════════════════════════
+    # Step 2: Draw semi-transparent panel backgrounds over the weather
+    # ═══════════════════════════════════════════════════════════════
+    panel_overlay = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+    p_draw = ImageDraw.Draw(panel_overlay)
+    # Clock panel — darker so text is readable
+    p_draw.rectangle([pad, py0, pad + p1w, py0 + ph], fill=(10, 12, 18, 200))
+    # System panel — darker so text is readable
+    p_draw.rectangle([p3x, py0, p3x + p3w, py0 + ph], fill=(10, 12, 18, 200))
+    # Weather panel — just a subtle darkening, let the weather show through
+    p_draw.rectangle([p2x, py0, p2x + p2w, py0 + ph], fill=(10, 12, 18, 60))
+    img.paste(Image.alpha_composite(Image.new('RGBA', (w, h), (0,0,0,0)), panel_overlay), (0, 0), panel_overlay)
+
+    # Panel borders
+    for (px_s, pw_s) in [(pad, p1w), (p2x, p2w), (p3x, p3w)]:
+        draw.rectangle([px_s, py0, px_s + pw_s, py0], fill=ACCENT_DIM)
+        draw.line([(px_s, py0), (px_s, py0+ph)], fill=BORDER)
+        draw.line([(px_s+pw_s, py0), (px_s+pw_s, py0+ph)], fill=BORDER)
+        draw.line([(px_s, py0+ph), (px_s+pw_s, py0+ph)], fill=BORDER)
+
+    # ═══════════════════════════════════════════════════════════════
+    # Step 3: Draw content on top
+    # ═══════════════════════════════════════════════════════════════
+    _render_clock_panel(draw, pad, py0, p1w, ph)
+
+    if _weather:
         _draw_weather_text(draw, p2x, py0, p2w, ph)
-
     elif _weather_error:
-        draw.rectangle([p2x, py0, p2x + p2w, py0 + ph],
-                       fill=PANEL_BG, outline=BORDER)
-        draw.rectangle([p2x, py0, p2x + p2w, py0 + 1], fill=ACCENT_DIM)
         draw.text((p2x + 12, py0 + 40), "Weather unavailable",
                   fill=RED, font=font(20))
         draw.text((p2x + 12, py0 + 70), _weather_error,
@@ -1622,17 +1624,9 @@ def render_frame(w: int = 1920, h: int = 440) -> Image.Image:
         draw.text((p2x + 12, py0 + 95), f"Retry in {remaining}s",
                   fill=TEXT_DIM, font=font(14))
     else:
-        draw.rectangle([p2x, py0, p2x + p2w, py0 + ph],
-                       fill=PANEL_BG, outline=BORDER)
-        draw.rectangle([p2x, py0, p2x + p2w, py0 + 1], fill=ACCENT_DIM)
         draw.text((p2x + 12, py0 + 40), "Fetching weather...",
                   fill=TEXT_DIM, font=font(20))
 
-    # ═══════════════════════════════════════════════════════════════
-    # Panel 3: System Info (right 30%)
-    # ═══════════════════════════════════════════════════════════════
-    p3x = p2x + p2w + pad
-    p3w = w - p3x - pad
     _render_sysinfo_panel(draw, p3x, py0, p3w, ph)
 
     # Bottom accent line
