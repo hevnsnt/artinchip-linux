@@ -587,24 +587,40 @@ def mode_url(disp, url, quality, fps):
         log("ERROR: No browser found (chromium/google-chrome)")
         return
 
-    # Use xvfb-run to launch browser — handles GL context properly
+    # Start Xvfb manually with -ac (no access control) so ffmpeg can capture
     display = ':98'
+    xvfb = subprocess.Popen(
+        ['Xvfb', display, '-screen', '0', f'{disp.w}x{disp.h}x24', '-ac'],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _child_procs.append(xvfb)
+    time.sleep(1)
+    if xvfb.poll() is not None:
+        log("ERROR: Xvfb failed")
+        return
+
+    env = os.environ.copy()
+    env['DISPLAY'] = display
+
+    # Launch chromium with --no-sandbox (required for Xvfb without GPU)
     browser_cmd = [
-        'xvfb-run', '-a', '--server-num=98',
-        f'--server-args=-screen 0 {disp.w}x{disp.h}x24 -ac',
         browser, '--no-sandbox', '--disable-dev-shm-usage',
         '--disable-background-timer-throttling',
         '--disable-renderer-backgrounding',
         '--disable-backgrounding-occluded-windows',
-        f'--window-size={disp.w},{disp.h}', '--kiosk', '--hide-scrollbars',
+        f'--window-size={disp.w},{disp.h}',
+        '--window-position=0,0',
+        '--kiosk', '--hide-scrollbars',
         '--autoplay-policy=no-user-gesture-required',
-        '--no-first-run', '--disable-translate', url
+        '--no-first-run', '--disable-translate',
+        '--force-device-scale-factor=1',
+        url
     ]
 
-    log(f"Launching {browser} via xvfb-run -> {url}")
-    bp = subprocess.Popen(browser_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    log(f"Launching {browser} on {display} -> {url}")
+    bp = subprocess.Popen(browser_cmd, env=env,
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     _child_procs.append(bp)
-    time.sleep(5)  # Give browser time to render first frame
+    time.sleep(5)
 
     log(f"Streaming {display} at {fps}fps")
     ffmpeg_cmd = [
