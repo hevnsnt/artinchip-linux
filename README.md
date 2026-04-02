@@ -19,7 +19,7 @@ These cheap USB-C bar monitors ship with Windows-only drivers and have **zero Li
 **Docker Monitor** — container status, CPU/memory bars, network I/O:
 ![docker](screenshots/docker_mon.png)
 
-**Clock + Weather** — time, wttr.in weather, system quick stats:
+**Clock + Weather** — animated weather scenes, 12hr time, system stats:
 ![clock](screenshots/clock.png)
 
 **Network Monitor** — active connections, state breakdown, process names:
@@ -44,7 +44,7 @@ cd artinchip-linux
 sudo ./install.sh
 ```
 
-The installer handles dependencies, udev rules, and puts `tinyscreen` in your PATH.
+The installer handles dependencies, udev rules, and puts `tinyscreen` in your PATH. No sudo required after install.
 
 ## Display Modes
 
@@ -54,7 +54,7 @@ The installer handles dependencies, udev rules, and puts `tinyscreen` in your PA
 |------|------|-------------|
 | **System Monitor** | `--sysmon` | CPU per-core bars, temps, GPU, memory, disk, swap, network sparklines |
 | **Crypto Ticker** | `--ticker` | Live BTC/ETH/SOL/DOGE/ADA/DOT/LINK/AVAX prices with 24h change |
-| **Clock + Weather** | `--clock` | Large clock, wttr.in weather, system quick stats |
+| **Clock + Weather** | `--clock` | 12hr clock, animated weather scenes (fog, rain, sun, snow, storms), system stats |
 | **Matrix Rain** | `--matrix` | Digital rain effect with real syslog data overlay |
 | **Audio Visualizer** | `--visualizer` | FFT spectrum analyzer from PulseAudio/PipeWire capture |
 | **Now Playing** | `--nowplaying` | MPRIS media info (Spotify, etc.) with progress bar |
@@ -67,7 +67,7 @@ The installer handles dependencies, udev rules, and puts `tinyscreen` in your PA
 
 | Mode | Flag | Description |
 |------|------|-------------|
-| **Website** | `--url URL` | Live virtual display + headless browser |
+| **Website** | `--url URL` | **60fps real-time** via headless Chromium CDP screencast |
 | **YouTube** | `--video URL` | Fetches up to 4K source, scales to display |
 | **Local Video** | `--video FILE` | Any format ffmpeg supports, `--loop` to repeat |
 | **Static Image** | `--image FILE` | Display any image file |
@@ -80,6 +80,11 @@ tinyscreen --sysmon
 tinyscreen --matrix
 tinyscreen --ticker
 tinyscreen --docker
+tinyscreen --clock
+
+# Display a website (60fps real-time rendering)
+tinyscreen --url https://your-dashboard.example.com/
+tinyscreen --url http://egon.local:8420/ --rotate 180
 
 # Rotate through modes (30 seconds each)
 tinyscreen --show all --delay 30
@@ -87,17 +92,19 @@ tinyscreen --show all --delay 30
 # Rotate specific modes
 tinyscreen --show sysmon matrix ticker docker --delay 20
 
-# Media
-tinyscreen --url https://your-dashboard.example.com/
+# Play videos
 tinyscreen --video "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 tinyscreen --video /path/to/video.mp4 --loop
 
 # Rotate the display output
 tinyscreen --sysmon --rotate 180
-tinyscreen --show all --rotate 90
 
 # Just run — uses config.yml defaults
 tinyscreen
+
+# Screenshot current URL render
+tinyscreen --screenshot
+tinyscreen --screenshot /path/to/output.png
 
 # Control
 tinyscreen --status
@@ -117,9 +124,29 @@ All commands run in the background by default. Add `--fg` to run in foreground.
 | `-q N` | JPEG quality 1-100 (default: auto) |
 | `--loop` | Loop video playback |
 | `--fg` | Run in foreground (don't daemonize) |
+| `--screenshot [FILE]` | Capture current URL render to PNG |
 | `--off` | Stop the running instance |
 | `--status` | Show current status |
 | `--test` | Show test pattern |
+
+## Website Mode (--url)
+
+The `--url` mode renders websites at **60fps in real-time** using:
+
+1. **Headless Chromium** with Chrome DevTools Protocol (CDP)
+2. **CDP Page.startScreencast** — Chromium pushes every rendered frame via WebSocket
+3. Frames are JPEG-encoded by Chromium and sent directly to the USB display
+
+This means CSS animations, JavaScript updates, progress bars, and live dashboard data all render smoothly on the bar display. The page's JavaScript keeps running continuously — it's a real browser, not screenshots.
+
+### Designing Pages for the Bar Display
+
+The browser viewport is exactly **1920x440 pixels**. Key rules:
+- Everything must fit in 440px height — no scrolling
+- Use horizontal multi-column layouts (3-5 columns)
+- Large text: body 16-20px, headers 24-36px, key metrics 48-72px
+- Minimal padding (4-8px) — every pixel of height matters
+- No navbars, footers, or UI chrome
 
 ## Configuration
 
@@ -181,18 +208,31 @@ These ArtInChip USB displays require a **proprietary RSA authentication handshak
 
 The protocol was reverse-engineered from the `aic-render` userspace binary and the `aic_drm_ud` kernel module source.
 
+### Performance
+
+| Metric | Value |
+|--------|-------|
+| USB send rate | 265 fps (JPEG q85, 20KB/frame) |
+| Display refresh | 60 Hz (hardware limit) |
+| URL mode (CDP screencast) | 60 fps |
+| CDP screenshot polling | ~9 fps |
+| Sysmon / Docker / Netmon | 2 fps |
+| Matrix / News / Ticker | 30 fps |
+| Audio Visualizer | 60 fps |
+| USB bandwidth used | ~5 MB/s of ~35 MB/s available |
+
 ## Dependencies
 
 Installed automatically by `install.sh`:
 
 - **Python 3.10+** with: `pyusb`, `Pillow`, `cryptography`, `PyYAML`
-- **ffmpeg** — video decoding and X11 capture
-- **Xvfb** — virtual framebuffer for URL mode
 - **Chromium or Google Chrome** — headless browser for URL mode
+- **ffmpeg** — video decoding
 - **yt-dlp** *(optional)* — YouTube video support
 - **numpy** *(optional)* — audio visualizer FFT
 - **feedparser** *(optional)* — RSS news crawl
-- **requests** *(optional)* — crypto ticker, weather
+- **requests** — crypto ticker, weather, CDP communication
+- **websocket-client** — CDP WebSocket for URL mode
 
 ## Troubleshooting
 
@@ -210,13 +250,13 @@ Replug the USB cable, or run: `sudo udevadm control --reload-rules && sudo udeva
 
 Make sure the `aic_drm_ud` kernel module isn't loaded: `lsmod | grep aic`. If loaded, blacklist it: `echo "blacklist aic_drm_ud" | sudo tee /etc/modprobe.d/blacklist-aic.conf`
 
-### NVIDIA + ArtInChip kernel module conflict
+### --url mode shows black screen
 
-If you installed ArtInChip's official `AiCast` driver and Xorg shows "Configure crtc failed" — that's the NVIDIA driver refusing to share pixmaps. **tinyscreen** avoids this by bypassing the kernel DRM layer entirely.
+Make sure no old chromium processes are holding port 9222: `pkill -f 'chromium.*9222'` then retry.
 
 ### Video playback is choppy
 
-Lower quality (`-q 50`) or framerate (`--fps 15`). USB 2.0 Hi-Speed (480 Mbps) is the bottleneck.
+Lower quality (`-q 50`) or framerate (`--fps 15`). USB 2.0 Hi-Speed (480 Mbps) is the bottleneck for video.
 
 ## Uninstall
 
@@ -251,12 +291,12 @@ Auth command (20 bytes, same struct):
 ```
 /opt/tinyscreen/
 ├── tinyscreen.py      # main driver + daemon + all mode dispatch
-├── tinyscreen         # shell wrapper (handles sudo)
+├── tinyscreen         # shell wrapper
 ├── sysmon.py          # system monitor renderer
 ├── config.yml         # default configuration
 ├── modes/
 │   ├── ticker.py      # crypto price ticker
-│   ├── clock.py       # clock + weather + system info
+│   ├── clock.py       # clock + animated weather + system info
 │   ├── matrix.py      # matrix digital rain
 │   ├── visualizer.py  # audio spectrum analyzer
 │   ├── nowplaying.py  # MPRIS now playing
@@ -273,9 +313,8 @@ Auth command (20 bytes, same struct):
 PRs welcome! Especially for:
 - Testing with other ArtInChip display models (0e01, 0e04, 0e05)
 - New display modes
-- H.264 frame encoding (device supports `media_format=0x11`)
 - Wayland compositor support
-- Direct RGB565 mode for higher frame rates
+- Custom dashboard templates for the bar form factor
 
 ## License
 
@@ -288,4 +327,4 @@ MIT License. See [LICENSE](LICENSE).
 
 ---
 
-**Keywords**: ArtInChip Linux driver, USB bar monitor Linux, ZHAOCAILIN Linux driver, 33c3:0e02 Linux, 1920x440 USB display Linux, stretched bar LCD Linux, AiCast Linux alternative, USB portable monitor Linux driver, ArtInChip RISC-V display, cheap USB monitor Linux, system monitor bar display, hardware dashboard Linux, crypto ticker display, matrix rain display, docker monitor display
+**Keywords**: ArtInChip Linux driver, USB bar monitor Linux, ZHAOCAILIN Linux driver, 33c3:0e02 Linux, 1920x440 USB display Linux, stretched bar LCD Linux, AiCast Linux alternative, USB portable monitor Linux driver, ArtInChip RISC-V display, cheap USB monitor Linux, system monitor bar display, hardware dashboard Linux, crypto ticker display, matrix rain display, docker monitor display, CDP screencast display
