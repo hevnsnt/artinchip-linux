@@ -345,19 +345,13 @@ def is_running(pid):
         return False
 
 def stop_existing():
-    pid = read_pid()
-    if not is_running(pid):
-        return
-    os.kill(pid, signal.SIGTERM)
-    for _ in range(30):
-        if not is_running(pid):
-            break
-        time.sleep(0.1)
-    else:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
+    """Kill all running tinyscreen.py processes (except ourselves)."""
+    my_pid = os.getpid()
+    # Use pkill — simple and reliable
+    subprocess.run(['pkill', '-f', 'tinyscreen.py'], capture_output=True)
+    time.sleep(0.3)
+    # Force kill any survivors
+    subprocess.run(['pkill', '-9', '-f', 'tinyscreen.py'], capture_output=True)
     for f in [PIDFILE, STATEFILE]:
         try:
             os.unlink(f)
@@ -844,11 +838,18 @@ def main():
 
     # --off
     if args.off:
-        pid = read_pid()
-        if not is_running(pid):
+        result = subprocess.run(['pgrep', '-f', 'tinyscreen.py'], capture_output=True)
+        if result.returncode != 0:
             print("tinyscreen is not running.")
             return
-        stop_existing()
+        subprocess.run(['pkill', '-f', 'tinyscreen.py'], capture_output=True)
+        time.sleep(0.3)
+        subprocess.run(['pkill', '-9', '-f', 'tinyscreen.py'], capture_output=True)
+        for f in [PIDFILE, STATEFILE]:
+            try:
+                os.unlink(f)
+            except (FileNotFoundError, PermissionError):
+                pass
         print("tinyscreen stopped.")
         return
 
