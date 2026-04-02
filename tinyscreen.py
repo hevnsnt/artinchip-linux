@@ -948,6 +948,8 @@ def main():
     group.add_argument('--show', nargs='+', metavar='MODE',
                        help='Rotate through modes (use "all" for all, or list names)')
     group.add_argument('--test', action='store_true', help='Show test pattern')
+    group.add_argument('--screenshot', nargs='?', const='/tmp/tinyscreen_screenshot.png',
+                       metavar='FILE', help='Save screenshot of current URL render')
     group.add_argument('--off', action='store_true', help='Stop running instance')
     group.add_argument('--status', action='store_true', help='Show status')
 
@@ -962,6 +964,25 @@ def main():
     parser.add_argument('--fg', action='store_true', help='Run in foreground')
 
     args = parser.parse_args()
+
+    # --screenshot
+    if args.screenshot is not None:
+        out_path = args.screenshot
+        try:
+            import requests as _req, websocket as _ws, base64
+            import json as _json
+            tabs = _req.get('http://localhost:9222/json', timeout=2).json()
+            ws = _ws.create_connection(tabs[0]['webSocketDebuggerUrl'], timeout=5)
+            ws.send(_json.dumps({'id': 1, 'method': 'Page.captureScreenshot', 'params': {'format': 'png'}}))
+            resp = _json.loads(ws.recv())
+            data = base64.b64decode(resp['result']['data'])
+            with open(out_path, 'wb') as f:
+                f.write(data)
+            ws.close()
+            print(f"Screenshot saved: {out_path} ({len(data)//1024}KB)")
+        except Exception as e:
+            print(f"Screenshot failed (is --url mode running?): {e}")
+        return
 
     # --off
     if args.off:
