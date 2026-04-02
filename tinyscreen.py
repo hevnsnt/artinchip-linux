@@ -572,9 +572,9 @@ def cleanup_children():
     _child_procs.clear()
 
 def mode_url(disp, url, quality, fps):
-    """Run a live virtual display with a browser pointed at url.
-    Uses xvfb-run for proper GL context setup."""
-    atexit.register(cleanup_children)
+    """Display a website using headless chromium screenshots in a loop.
+    Takes a screenshot every ~1 second, sends to the display.
+    For live dashboards this is plenty — the page JS keeps running between shots."""
 
     wait_for_url(disp, url, quality)
 
@@ -587,52 +587,44 @@ def mode_url(disp, url, quality, fps):
         log("ERROR: No browser found (chromium/google-chrome)")
         return
 
-    # Start Xvfb manually with -ac (no access control) so ffmpeg can capture
-    display = ':98'
-    xvfb = subprocess.Popen(
-        ['Xvfb', display, '-screen', '0', f'{disp.w}x{disp.h}x24', '-ac'],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    _child_procs.append(xvfb)
-    time.sleep(1)
-    if xvfb.poll() is not None:
-        log("ERROR: Xvfb failed")
-        return
+    w, h = disp.w, disp.h
+    screenshot_path = '/tmp/tinyscreen_screenshot.png'
+    interval = max(1.0, 1.0 / fps * 10)  # ~1-2 seconds between shots
 
-    env = os.environ.copy()
-    env['DISPLAY'] = display
+    log(f"URL mode: {browser} headless screenshots @ ~{1/interval:.1f}fps -> {url}")
 
-    # Launch chromium with --no-sandbox (required for Xvfb without GPU)
-    browser_cmd = [
-        browser, '--no-sandbox', '--disable-dev-shm-usage',
-        '--disable-background-timer-throttling',
-        '--disable-renderer-backgrounding',
-        '--disable-backgrounding-occluded-windows',
-        f'--window-size={disp.w},{disp.h}',
-        '--window-position=0,0',
-        '--kiosk', '--hide-scrollbars',
-        '--autoplay-policy=no-user-gesture-required',
-        '--no-first-run', '--disable-translate',
-        '--force-device-scale-factor=1',
-        url
-    ]
+    frame_id = 0
+    while True:
+        try:
+            # Take headless screenshot via xvfb-run
+            result = subprocess.run([
+                'xvfb-run', '-a',
+                f'--server-args=-screen 0 {w}x{h}x24',
+                browser, '--headless', '--no-sandbox', '--disable-gpu',
+                f'--window-size={w},{h}', '--hide-scrollbars',
+                f'--screenshot={screenshot_path}',
+                '--force-device-scale-factor=1',
+                url
+            ], capture_output=True, timeout=15)
 
-    log(f"Launching {browser} on {display} -> {url}")
-    bp = subprocess.Popen(browser_cmd, env=env,
-                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    _child_procs.append(bp)
-    time.sleep(5)
+            if os.path.exists(screenshot_path):
+                img = Image.open(screenshot_path)
+                img = img.resize((w, h), Image.LANCZOS)
+                jpeg = image_to_jpeg(img, quality)
 
-    log(f"Streaming {display} at {fps}fps")
-    ffmpeg_cmd = [
-        'ffmpeg', '-hide_banner', '-loglevel', 'error',
-        '-f', 'x11grab', '-framerate', str(fps),
-        '-video_size', f'{disp.w}x{disp.h}', '-i', display,
-        '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'
-    ]
-    try:
-        stream_ffmpeg(disp, ffmpeg_cmd, quality, fps, loop=True)
-    finally:
-        cleanup_children()
+                if not disp.send(jpeg):
+                    disp.wait_for_device()
+
+                frame_id += 1
+                if frame_id % 30 == 1:
+                    log(f"URL frame {frame_id}, {len(jpeg)//1024}KB")
+
+        except subprocess.TimeoutExpired:
+            log("Screenshot timed out, retrying...")
+        except Exception as e:
+            log(f"URL error: {e}")
+
+        time.sleep(interval)
 
 # ── Mode: image ─────────────────────────────────────────────────────
 def mode_image(disp, path, quality):
