@@ -21,6 +21,7 @@ BORDER     = (35, 42, 58)
 ACCENT     = (0, 170, 255)
 TEXT       = (200, 210, 225)
 TEXT_DIM   = (100, 110, 130)
+TEXT_BRIGHT= (240, 245, 255)
 GREEN      = (0, 220, 100)
 RED        = (255, 60, 60)
 YELLOW     = (255, 200, 0)
@@ -53,35 +54,20 @@ WEATHER_INTERVAL = 300  # 5 minutes
 import math
 import random
 
-# Animated weather icon state
+# Animated weather state
 _anim_frame = 0
-_rain_drops = []     # [(x, y, speed, length)]
-_snow_flakes = []    # [(x, y, speed, drift)]
-_grass_blades = []   # [(x, height, phase)]
+_rain_drops = []
+_snow_flakes = []
 _lightning_timer = 0
 _lightning_on = False
+_fog_particles = []
 
-def _init_rain(ix, iy, iw, ih, count=25):
-    global _rain_drops
-    _rain_drops = [(random.randint(ix, ix+iw), random.randint(iy, iy+ih),
-                    random.randint(4, 8), random.randint(8, 20)) for _ in range(count)]
-
-def _init_snow(ix, iy, iw, ih, count=20):
-    global _snow_flakes
-    _snow_flakes = [(random.randint(ix, ix+iw), random.randint(iy, iy+ih),
-                    random.uniform(1, 3), random.uniform(-1, 1)) for _ in range(count)]
-
-def _init_grass(ix, iy, iw, ih, count=30):
-    global _grass_blades
-    _grass_blades = [(ix + i * (iw // count), random.randint(8, 18),
-                     random.uniform(0, math.pi*2)) for i in range(count)]
-
-def _draw_animated_icon(draw, ix, iy, iw, ih, condition, temp_f):
-    """Draw an animated weather scene in the given rectangle."""
-    global _anim_frame, _rain_drops, _snow_flakes, _grass_blades
+def _draw_weather_bg(draw, px, py, pw, ph, condition, temp_f):
+    """Draw full-panel animated weather background. Called BEFORE text."""
+    global _anim_frame, _rain_drops, _snow_flakes, _fog_particles
     global _lightning_timer, _lightning_on
     _anim_frame += 1
-    t = _anim_frame * 0.1  # time variable for smooth animation
+    t = _anim_frame * 0.1
 
     cond = condition.lower()
     is_hot = False
@@ -90,164 +76,241 @@ def _draw_animated_icon(draw, ix, iy, iw, ih, condition, temp_f):
     except (ValueError, TypeError):
         pass
 
-    cx, cy = ix + iw // 2, iy + ih // 2  # center
+    right = px + pw
+    bot = py + ph
 
     if 'thunder' in cond or 'storm' in cond:
-        # ── Thunderstorm: dark cloud + rain + lightning flashes ──
-        _draw_cloud(draw, cx - 40, iy + 10, 80, 35, (60, 60, 80))
-        # Lightning
+        # ── THUNDERSTORM: dark tinted panel, dense rain, lightning flashes ──
+        draw.rectangle([px, py, right, bot], fill=(12, 12, 25))
+        # Lightning flash
         _lightning_timer -= 1
         if _lightning_timer <= 0:
-            _lightning_on = random.random() < 0.15
-            _lightning_timer = 2 if _lightning_on else random.randint(5, 20)
+            _lightning_on = random.random() < 0.12
+            _lightning_timer = 2 if _lightning_on else random.randint(8, 25)
         if _lightning_on:
-            # Flash background
-            draw.rectangle([ix, iy, ix+iw, iy+ih], fill=(60, 60, 90))
-            _draw_cloud(draw, cx - 40, iy + 10, 80, 35, (120, 120, 150))
-            # Lightning bolt
-            bx = cx + random.randint(-20, 20)
-            pts = [(bx, iy+45), (bx-8, iy+65), (bx+5, iy+63), (bx-12, iy+90)]
-            draw.line(pts, fill=(255, 255, 200), width=2)
-        # Rain
-        if not _rain_drops:
-            _init_rain(ix, iy + 45, iw, ih - 45)
-        _animate_rain(draw, ix, iy + 45, iw, ih - 45, (100, 140, 255))
+            draw.rectangle([px, py, right, bot], fill=(50, 50, 80))
+            # Big lightning bolt
+            bx = px + random.randint(pw//4, pw*3//4)
+            pts = [(bx, py+20)]
+            y_pos = py + 20
+            for _ in range(6):
+                y_pos += random.randint(30, 60)
+                bx += random.randint(-30, 30)
+                pts.append((bx, min(y_pos, bot - 10)))
+            draw.line(pts, fill=(255, 255, 220), width=3)
+            # Glow around bolt
+            for p1, p2 in zip(pts, pts[1:]):
+                draw.line([p1, p2], fill=(200, 200, 255), width=6)
+                draw.line([p1, p2], fill=(255, 255, 220), width=2)
+        # Clouds across top
+        for i in range(5):
+            cx = px + int(i * pw / 4) + int(math.sin(t * 0.2 + i) * 15)
+            _draw_cloud(draw, cx - 60, py + 5, 120, 50, (30, 30, 50))
+        # Dense rain
+        if not _rain_drops or len(_rain_drops) < 80:
+            _rain_drops = [(random.randint(px, right), random.randint(py+50, bot),
+                           random.randint(8, 16), random.randint(15, 35)) for _ in range(80)]
+        _animate_rain(draw, px, py + 50, pw, ph - 50, (70, 100, 200))
 
     elif 'snow' in cond or 'sleet' in cond:
-        # ── Snow: cloud + falling snowflakes ──
-        _draw_cloud(draw, cx - 35, iy + 10, 70, 30, (140, 150, 170))
-        if not _snow_flakes:
-            _init_snow(ix, iy + 40, iw, ih - 40)
+        # ── SNOW: soft blue tint, dense flakes drifting ──
+        draw.rectangle([px, py, right, bot], fill=(15, 18, 30))
+        # Clouds
+        for i in range(4):
+            cx = px + int(i * pw / 3) + int(math.sin(t * 0.15 + i) * 10)
+            _draw_cloud(draw, cx - 50, py + 5, 100, 40, (50, 55, 70))
+        # Snowflakes
+        if not _snow_flakes or len(_snow_flakes) < 60:
+            _snow_flakes = [(random.randint(px, right), random.randint(py, bot),
+                            random.uniform(1, 4), random.uniform(-2, 2),
+                            random.randint(2, 5)) for _ in range(60)]
         for i in range(len(_snow_flakes)):
-            sx, sy, spd, drift = _snow_flakes[i]
+            sx, sy, spd, drift, size = _snow_flakes[i]
             sy += spd
-            sx += math.sin(t + drift * 3) * 1.5
-            if sy > iy + ih:
-                sy = iy + 40
-                sx = random.randint(ix, ix + iw)
-            _snow_flakes[i] = (sx, sy, spd, drift)
-            size = random.choice([2, 3])
-            draw.ellipse([sx-size, sy-size, sx+size, sy+size], fill=(220, 230, 255))
+            sx += math.sin(t * 0.8 + drift * 3) * 2 + drift * 0.3
+            if sy > bot or sx < px - 10 or sx > right + 10:
+                sy = py + random.randint(-20, 0)
+                sx = random.randint(px, right)
+            _snow_flakes[i] = (sx, sy, spd, drift, size)
+            alpha = 150 + int(math.sin(t + i) * 50)
+            draw.ellipse([sx-size, sy-size, sx+size, sy+size],
+                        fill=(alpha, alpha+20, 255))
 
     elif 'rain' in cond or 'drizzle' in cond:
-        # ── Rain: grey cloud + falling drops ──
-        _draw_cloud(draw, cx - 35, iy + 10, 70, 30, (100, 110, 130))
+        # ── RAIN: dark tint, rain streaks across whole panel ──
+        draw.rectangle([px, py, right, bot], fill=(12, 15, 25))
         heavy = 'heavy' in cond
-        if not _rain_drops:
-            _init_rain(ix, iy + 40, iw, ih - 40, 35 if heavy else 20)
-        color = (80, 130, 255) if heavy else (100, 160, 255)
-        _animate_rain(draw, ix, iy + 40, iw, ih - 40, color)
+        count = 60 if heavy else 35
+        # Clouds
+        for i in range(4):
+            cx = px + int(i * pw / 3) + int(math.sin(t * 0.2 + i) * 12)
+            shade = 40 + i * 8
+            _draw_cloud(draw, cx - 50, py + 5, 100, 40, (shade, shade+5, shade+15))
+        # Rain drops
+        if not _rain_drops or len(_rain_drops) < count:
+            _rain_drops = [(random.randint(px, right), random.randint(py+40, bot),
+                           random.randint(5, 12), random.randint(12, 28)) for _ in range(count)]
+        color = (60, 100, 220) if heavy else (80, 130, 230)
+        _animate_rain(draw, px, py + 40, pw, ph - 40, color)
 
-    elif 'fog' in cond or 'mist' in cond or 'haze' in cond:
-        # ── Fog: horizontal drifting lines ──
-        for i in range(8):
-            y_line = iy + 15 + i * (ih // 8)
-            x_off = math.sin(t * 0.5 + i * 0.7) * 20
-            alpha = 80 + int(math.sin(t * 0.3 + i) * 40)
-            color = (alpha, alpha + 10, alpha + 20)
-            draw.line([(ix + 5 + x_off, y_line), (ix + iw - 5 + x_off, y_line)],
-                     fill=color, width=2)
+    elif 'fog' in cond or 'mist' in cond or 'haze' in cond or 'overcast' in cond:
+        # ── FOG/OVERCAST: rolling fog layers across entire panel ──
+        draw.rectangle([px, py, right, bot], fill=(14, 16, 24))
+        # Multiple fog layers at different speeds and heights
+        if not _fog_particles or len(_fog_particles) < 25:
+            _fog_particles = [(random.uniform(0, 1), random.uniform(0, 1),
+                              random.uniform(0.2, 0.8), random.uniform(20, 80),
+                              random.uniform(0.3, 1.0)) for _ in range(25)]
+        for i, (fx, fy, speed, width, opacity) in enumerate(_fog_particles):
+            # Fog band drifts horizontally and undulates vertically
+            x_pos = px + ((fx + t * speed * 0.02) % 1.3 - 0.15) * pw
+            y_pos = py + fy * ph + math.sin(t * 0.3 + i * 1.7) * 20
+            w_band = width + math.sin(t * 0.2 + i) * 15
+            h_band = 8 + math.sin(t * 0.4 + i * 0.5) * 4
+            a = int(30 * opacity + math.sin(t * 0.5 + i * 0.9) * 12)
+            a = max(10, min(50, a))
+            color = (a + 10, a + 14, a + 22)
+            # Draw as a soft horizontal band
+            draw.rounded_rectangle(
+                [x_pos - w_band/2, y_pos - h_band, x_pos + w_band/2, y_pos + h_band],
+                radius=int(h_band), fill=color)
+        # A few larger cloud banks
+        for i in range(3):
+            drift = (t * (0.3 + i * 0.15)) % (pw + 200) - 100
+            cy = py + 30 + i * (ph // 3) + int(math.sin(t * 0.2 + i * 2) * 15)
+            shade = 25 + i * 5
+            _draw_cloud(draw, px + drift, cy, 140, 55, (shade, shade+4, shade+12))
 
     elif is_hot:
-        # ── ANGRY HOT SUN: red furious face ──
-        r = min(iw, ih) // 2 - 10
-        # Pulsing glow
-        pulse = math.sin(t * 3) * 5
-        glow_r = r + 8 + int(pulse)
-        draw.ellipse([cx-glow_r, cy-glow_r-5, cx+glow_r, cy+glow_r-5], fill=(80, 10, 0))
-        # Sun body
-        draw.ellipse([cx-r, cy-r-5, cx+r, cy+r-5], fill=(255, 50, 0))
-        # Angry eyebrows (angled down toward center)
-        eb_y = cy - r//3
-        draw.line([(cx-r//2, eb_y-8), (cx-r//5, eb_y+2)], fill=(120, 0, 0), width=3)
-        draw.line([(cx+r//2, eb_y-8), (cx+r//5, eb_y+2)], fill=(120, 0, 0), width=3)
-        # Angry eyes
-        draw.ellipse([cx-r//3-4, cy-8, cx-r//3+4, cy+4], fill=(120, 0, 0))
-        draw.ellipse([cx+r//3-4, cy-8, cx+r//3+4, cy+4], fill=(120, 0, 0))
-        # Angry mouth (wavy grimace)
-        mouth_y = cy + r // 3
-        pts = []
-        for mx in range(-r//3, r//3 + 1, 3):
-            my = mouth_y + int(math.sin(mx * 0.3 + t * 5) * 3) - 5
-            pts.append((cx + mx, my))
-        if len(pts) > 1:
-            draw.line(pts, fill=(120, 0, 0), width=2)
-        # Steam/heat waves rising
-        for i in range(3):
-            wx = cx - 20 + i * 20
-            for dy in range(0, 25, 3):
-                wy = cy - r - 15 - dy + int(math.sin(t * 4 + i + dy * 0.3) * 3)
-                alpha = max(0, 200 - dy * 8)
-                draw.point((wx + int(math.sin(t*2 + dy*0.2 + i)*4), wy), fill=(255, alpha, 0))
+        # ── ANGRY HOT SUN: red-tinted panel, big angry sun, heat shimmer ──
+        draw.rectangle([px, py, right, bot], fill=(30, 8, 5))
+        # Heat shimmer lines across whole panel
+        for i in range(15):
+            y_line = py + int(i * ph / 14)
+            wave = [px + int(x + math.sin(t * 3 + x * 0.02 + i) * 4) for x in range(0, pw, 3)]
+            for j in range(len(wave) - 1):
+                a = 30 + int(math.sin(t * 2 + j * 0.1 + i) * 15)
+                draw.line([(wave[j], y_line), (wave[j+1], y_line)],
+                         fill=(a + 30, a, 0), width=1)
+        # Big angry sun
+        sun_r = min(pw, ph) // 3
+        sun_cx = px + pw * 3 // 4
+        sun_cy = py + ph // 3
+        pulse = math.sin(t * 3) * 8
+        # Glow
+        draw.ellipse([sun_cx-sun_r-20-pulse, sun_cy-sun_r-20-pulse,
+                      sun_cx+sun_r+20+pulse, sun_cy+sun_r+20+pulse], fill=(60, 10, 0))
+        # Body
+        draw.ellipse([sun_cx-sun_r, sun_cy-sun_r, sun_cx+sun_r, sun_cy+sun_r], fill=(220, 40, 0))
+        # Angry eyebrows
+        draw.line([(sun_cx-sun_r//2, sun_cy-sun_r//3-10), (sun_cx-sun_r//6, sun_cy-sun_r//4+5)],
+                  fill=(100, 0, 0), width=4)
+        draw.line([(sun_cx+sun_r//2, sun_cy-sun_r//3-10), (sun_cx+sun_r//6, sun_cy-sun_r//4+5)],
+                  fill=(100, 0, 0), width=4)
+        # Eyes
+        draw.ellipse([sun_cx-sun_r//3-6, sun_cy-8, sun_cx-sun_r//3+6, sun_cy+8], fill=(100, 0, 0))
+        draw.ellipse([sun_cx+sun_r//3-6, sun_cy-8, sun_cx+sun_r//3+6, sun_cy+8], fill=(100, 0, 0))
+        # Angry jagged mouth
+        mouth_pts = []
+        for mx in range(-sun_r//2, sun_r//2 + 1, 8):
+            my = sun_cy + sun_r//3 + int(math.sin(mx * 0.4 + t * 6) * 5)
+            mouth_pts.append((sun_cx + mx, my))
+        if len(mouth_pts) > 1:
+            draw.line(mouth_pts, fill=(100, 0, 0), width=3)
+        # Rising heat waves
+        for i in range(8):
+            wx = px + int(i * pw / 7)
+            for dy in range(0, 40, 2):
+                wy = py + 5 + dy
+                wx2 = wx + int(math.sin(t * 4 + i * 1.5 + dy * 0.15) * 8)
+                a = max(0, 120 - dy * 3)
+                draw.point((wx2, wy), fill=(a + 80, a, 0))
 
     elif 'sun' in cond or 'clear' in cond:
-        # ── Sunny: bright yellow sun with rotating rays + grass blowing ──
-        r = min(iw, ih) // 2 - 20
-        sun_cy = cy - 15
-        # Rotating rays
-        for i in range(12):
-            angle = t * 0.5 + i * math.pi / 6
-            x1 = cx + int(math.cos(angle) * (r + 5))
-            y1 = sun_cy + int(math.sin(angle) * (r + 5))
-            x2 = cx + int(math.cos(angle) * (r + 18 + math.sin(t * 2 + i) * 5))
-            y2 = sun_cy + int(math.sin(angle) * (r + 18 + math.sin(t * 2 + i) * 5))
-            draw.line([(x1, y1), (x2, y2)], fill=(255, 220, 50), width=2)
-        # Sun body
-        draw.ellipse([cx-r, sun_cy-r, cx+r, sun_cy+r], fill=(255, 220, 50))
+        # ── SUNNY: warm tint, big sun with rays, grass at bottom ──
+        draw.rectangle([px, py, right, bot], fill=(12, 15, 25))
+        # Sun with animated rays
+        sun_r = min(pw, ph) // 4
+        sun_cx = px + pw * 3 // 4
+        sun_cy = py + ph // 3
+        for i in range(16):
+            angle = t * 0.4 + i * math.pi / 8
+            r1 = sun_r + 8
+            r2 = sun_r + 25 + math.sin(t * 2 + i) * 8
+            x1 = sun_cx + int(math.cos(angle) * r1)
+            y1 = sun_cy + int(math.sin(angle) * r1)
+            x2 = sun_cx + int(math.cos(angle) * r2)
+            y2 = sun_cy + int(math.sin(angle) * r2)
+            draw.line([(x1, y1), (x2, y2)], fill=(180, 160, 30), width=2)
+        draw.ellipse([sun_cx-sun_r, sun_cy-sun_r, sun_cx+sun_r, sun_cy+sun_r],
+                    fill=(255, 220, 50))
         # Happy face
-        draw.ellipse([cx-r//4-3, sun_cy-4, cx-r//4+3, sun_cy+4], fill=(200, 150, 0))
-        draw.ellipse([cx+r//4-3, sun_cy-4, cx+r//4+3, sun_cy+4], fill=(200, 150, 0))
-        draw.arc([cx-r//3, sun_cy+2, cx+r//3, sun_cy+r//2], 0, 180, fill=(200, 150, 0), width=2)
-        # Grass at bottom
-        grass_y = iy + ih - 5
-        if not _grass_blades:
-            _init_grass(ix + 5, grass_y, iw - 10, 20)
-        for gx, gh, phase in _grass_blades:
-            sway = math.sin(t * 2 + phase) * 6
-            draw.line([(gx, grass_y), (gx + sway, grass_y - gh)], fill=(30, 180, 50), width=2)
+        er = sun_r // 5
+        draw.ellipse([sun_cx-sun_r//3-er, sun_cy-er, sun_cx-sun_r//3+er, sun_cy+er],
+                    fill=(200, 150, 0))
+        draw.ellipse([sun_cx+sun_r//3-er, sun_cy-er, sun_cx+sun_r//3+er, sun_cy+er],
+                    fill=(200, 150, 0))
+        draw.arc([sun_cx-sun_r//3, sun_cy+5, sun_cx+sun_r//3, sun_cy+sun_r//2],
+                 0, 180, fill=(200, 150, 0), width=2)
+        # Grass along bottom
+        grass_y = bot - 4
+        for gx in range(px + 5, right - 5, 8):
+            gh = random.randint(10, 22)
+            sway = math.sin(t * 2.5 + gx * 0.05) * 7
+            draw.line([(gx, grass_y), (gx + sway, grass_y - gh)], fill=(25, 150, 45), width=2)
 
-    elif 'cloud' in cond or 'overcast' in cond:
-        # ── Cloudy: multiple drifting clouds ──
-        for i, (off_x, off_y, size) in enumerate([(0, 0, 1.0), (-30, 20, 0.7), (25, 25, 0.8)]):
-            drift = math.sin(t * 0.3 + i * 2) * 8
-            shade = 100 + i * 20
-            _draw_cloud(draw, cx - 35 + off_x + drift, iy + 15 + off_y,
-                        int(70 * size), int(30 * size), (shade, shade+10, shade+20))
+    elif 'cloud' in cond:
+        # ── CLOUDY: multiple cloud layers drifting ──
+        draw.rectangle([px, py, right, bot], fill=(14, 16, 24))
+        layers = [(0.15, py+10, 55, 50), (0.25, py+60, 45, 70),
+                  (0.1, py+110, 60, 90), (0.35, py+40, 40, 30),
+                  (0.2, py+150, 50, 60)]
+        for speed, base_y, shade, width_pct in layers:
+            for j in range(3):
+                drift = ((t * speed + j * 0.4) % 1.4 - 0.2) * pw
+                cw = pw * width_pct // 100 + int(math.sin(t * 0.3 + j) * 20)
+                ch = 40 + int(math.sin(t * 0.2 + j * 1.3) * 8)
+                cy = base_y + int(math.sin(t * 0.25 + j * 2) * 10)
+                _draw_cloud(draw, px + drift, cy, cw, ch, (shade, shade+5, shade+15))
 
     else:
-        # ── Partly cloudy default: sun peeking behind cloud ──
-        sun_x, sun_y = cx + 15, iy + 25
-        r = 18
-        for i in range(8):
-            angle = t * 0.4 + i * math.pi / 4
-            x1 = sun_x + int(math.cos(angle) * (r + 3))
-            y1 = sun_y + int(math.sin(angle) * (r + 3))
-            x2 = sun_x + int(math.cos(angle) * (r + 12))
-            y2 = sun_y + int(math.sin(angle) * (r + 12))
-            draw.line([(x1, y1), (x2, y2)], fill=(200, 180, 40), width=2)
-        draw.ellipse([sun_x-r, sun_y-r, sun_x+r, sun_y+r], fill=(255, 220, 60))
-        _draw_cloud(draw, cx - 40, iy + 30, 75, 35, (160, 170, 190))
+        # ── PARTLY CLOUDY default: sun + drifting clouds ──
+        draw.rectangle([px, py, right, bot], fill=(12, 14, 22))
+        sun_cx = px + pw * 3 // 4
+        sun_cy = py + ph // 4
+        sr = 30
+        for i in range(10):
+            angle = t * 0.3 + i * math.pi / 5
+            draw.line([(sun_cx + int(math.cos(angle)*(sr+5)), sun_cy + int(math.sin(angle)*(sr+5))),
+                       (sun_cx + int(math.cos(angle)*(sr+18)), sun_cy + int(math.sin(angle)*(sr+18)))],
+                     fill=(180, 160, 40), width=2)
+        draw.ellipse([sun_cx-sr, sun_cy-sr, sun_cx+sr, sun_cy+sr], fill=(255, 220, 60))
+        for i in range(3):
+            drift = ((t * (0.15 + i*0.1) + i * 0.5) % 1.5 - 0.25) * pw
+            _draw_cloud(draw, px + drift, py + 30 + i * 50, 130, 50,
+                       (45 + i*10, 50 + i*10, 65 + i*10))
 
 def _draw_cloud(draw, x, y, w, h, color):
     """Draw a puffy cloud shape."""
-    # Three overlapping ellipses
     draw.ellipse([x, y + h//3, x + w//2, y + h], fill=color)
     draw.ellipse([x + w//4, y, x + w*3//4, y + h*2//3], fill=color)
     draw.ellipse([x + w//2, y + h//4, x + w, y + h], fill=color)
-    # Bottom rectangle to fill gaps
     draw.rectangle([x + w//6, y + h//2, x + w - w//6, y + h], fill=color)
 
-def _animate_rain(draw, ix, iy, iw, ih, color):
-    """Animate falling rain drops."""
+def _animate_rain(draw, px, py, pw, ph, color):
+    """Animate falling rain drops across the full area."""
     global _rain_drops
+    right = px + pw
+    bot = py + ph
     for i in range(len(_rain_drops)):
         rx, ry, spd, length = _rain_drops[i]
         ry += spd
-        if ry > iy + ih:
-            ry = iy
-            rx = random.randint(ix, ix + iw)
+        rx -= spd // 3  # slight wind angle
+        if ry > bot or rx < px:
+            ry = py + random.randint(-20, 0)
+            rx = random.randint(px, right)
         _rain_drops[i] = (rx, ry, spd, length)
-        draw.line([(rx, ry), (rx - 2, ry + length)], fill=color, width=1)
+        draw.line([(rx, ry), (rx - 3, ry + length)], fill=color, width=1)
 
 def init():
     """Initialize clock state. Fetches weather on first call."""
@@ -322,8 +385,11 @@ def _read_uptime():
     except Exception:
         return '?'
 
+_cpu_smooth = 0.0
+
 def _read_cpu_pct():
-    """Quick single-read CPU usage estimate from /proc/stat."""
+    """Smoothed CPU usage from /proc/stat (EMA to prevent jitter)."""
+    global _cpu_smooth
     try:
         with open('/proc/stat') as f:
             line = f.readline()
@@ -331,7 +397,6 @@ def _read_cpu_pct():
         vals = [int(x) for x in parts[1:]]
         idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
         total = sum(vals)
-        # Use a cached previous reading
         if not hasattr(_read_cpu_pct, '_prev'):
             _read_cpu_pct._prev = (idle, total)
             return 0.0
@@ -339,8 +404,12 @@ def _read_cpu_pct():
         d_total = total - _read_cpu_pct._prev[1]
         _read_cpu_pct._prev = (idle, total)
         if d_total > 0:
-            return 100.0 * (1.0 - d_idle / d_total)
-        return 0.0
+            raw = 100.0 * (1.0 - d_idle / d_total)
+        else:
+            raw = 0.0
+        # Exponential moving average to smooth jitter
+        _cpu_smooth = _cpu_smooth * 0.7 + raw * 0.3
+        return _cpu_smooth
     except Exception:
         return 0.0
 
@@ -474,13 +543,20 @@ def render_frame(w=1920, h=440):
     _draw_panel(draw, p2x, py0, p2w, ph, "WEATHER")
 
     if _weather:
+        condition = _weather.get('condition', 'Unknown')
+        temp_f_val = _weather.get('temp_f', None)
+
+        # Draw animated weather background FIRST (full panel)
+        _draw_weather_bg(draw, p2x + 1, py0 + 2, p2w - 2, ph - 3, condition, temp_f_val)
+
+        # Then draw text on top
         wy_base = py0 + 24
 
         # Location
         draw.text((p2x + 8, wy_base), _weather.get('location', ''),
-                  fill=TEXT_DIM, font=font(16))
+                  fill=(180, 190, 210), font=font(16))
 
-        # Temperature — large (use Fahrenheit if available, else Celsius)
+        # Temperature — large
         temp_f = _weather.get('temp_f')
         feels_f = _weather.get('feels_f')
         if temp_f and temp_f != '?':
@@ -489,25 +565,17 @@ def render_frame(w=1920, h=440):
         else:
             temp_str = f"{_weather['temp_c']}°C"
             feels_str = f"Feels like {_weather['feels_c']}°C"
-        draw.text((p2x + 8, wy_base + 24), temp_str,
-                  fill=ACCENT, font=font(72))
+        # Text shadow for readability over animated bg
+        draw.text((p2x + 10, wy_base + 26), temp_str, fill=(0, 0, 0), font=font(72))
+        draw.text((p2x + 8, wy_base + 24), temp_str, fill=ACCENT, font=font(72))
 
         # Feels like
         draw.text((p2x + 8, wy_base + 105), feels_str,
-                  fill=TEXT_DIM, font=font(18))
+                  fill=(160, 170, 190), font=font(18))
 
         # Condition text
-        condition = _weather.get('condition', 'Unknown')
-        draw.text((p2x + 8, wy_base + 132), condition,
-                  fill=TEXT, font=font(24))
-
-        # Animated weather icon (right side of panel)
-        icon_x = p2x + p2w - 170
-        icon_y = wy_base + 20
-        icon_w = 160
-        icon_h = 130
-        temp_f_val = _weather.get('temp_f', None)
-        _draw_animated_icon(draw, icon_x, icon_y, icon_w, icon_h, condition, temp_f_val)
+        draw.text((p2x + 10, wy_base + 134), condition, fill=(0, 0, 0), font=font(24))
+        draw.text((p2x + 8, wy_base + 132), condition, fill=TEXT_BRIGHT, font=font(24))
 
         # Details grid — bottom half
         detail_y = wy_base + 170
