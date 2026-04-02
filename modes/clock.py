@@ -50,21 +50,204 @@ _weather_last_fetch = 0.0
 _weather_error = None
 WEATHER_INTERVAL = 300  # 5 minutes
 
-# Weather condition to ASCII icon mapping
-_WEATHER_ICONS = {
-    'sunny':          ['    \\   /   ', '     .-.    ', '  - (   ) - ', '     `-`    ', '    /   \\   '],
-    'clear':          ['    \\   /   ', '     .-.    ', '  - (   ) - ', '     `-`    ', '    /   \\   '],
-    'partly cloudy':  ['   \\  /     ', ' _ /\"\".-.   ', '   \\_(   ). ', '   /(___(__)', '            '],
-    'cloudy':         ['            ', '     .--.   ', '  .-(    ). ', ' (___.__)__)', '            '],
-    'overcast':       ['            ', '     .--.   ', '  .-(    ). ', ' (___.__)__)', '            '],
-    'rain':           ['     .-.    ', '    (   ).  ', '   (___(__))', '   / / / /  ', '  / / / /   '],
-    'light rain':     ['     .-.    ', '    (   ).  ', '   (___(__))', '    / / /   ', '            '],
-    'heavy rain':     ['     .-.    ', '    (   ).  ', '   (___(__))', '  ////////  ', '  ////////  '],
-    'snow':           ['     .-.    ', '    (   ).  ', '   (___(__))', '   * * * *  ', '  * * * *   '],
-    'thunder':        ['     .-.    ', '    (   ).  ', '   (___(__))', '   _/  _/   ', '   /  /     '],
-    'fog':            ['            ', ' _ - _ - _ -', '  _ - _ - _ ', ' _ - _ - _ -', '            '],
-    'mist':           ['            ', ' _ - _ - _ -', '  _ - _ - _ ', ' _ - _ - _ -', '            '],
-}
+import math
+import random
+
+# Animated weather icon state
+_anim_frame = 0
+_rain_drops = []     # [(x, y, speed, length)]
+_snow_flakes = []    # [(x, y, speed, drift)]
+_grass_blades = []   # [(x, height, phase)]
+_lightning_timer = 0
+_lightning_on = False
+
+def _init_rain(ix, iy, iw, ih, count=25):
+    global _rain_drops
+    _rain_drops = [(random.randint(ix, ix+iw), random.randint(iy, iy+ih),
+                    random.randint(4, 8), random.randint(8, 20)) for _ in range(count)]
+
+def _init_snow(ix, iy, iw, ih, count=20):
+    global _snow_flakes
+    _snow_flakes = [(random.randint(ix, ix+iw), random.randint(iy, iy+ih),
+                    random.uniform(1, 3), random.uniform(-1, 1)) for _ in range(count)]
+
+def _init_grass(ix, iy, iw, ih, count=30):
+    global _grass_blades
+    _grass_blades = [(ix + i * (iw // count), random.randint(8, 18),
+                     random.uniform(0, math.pi*2)) for i in range(count)]
+
+def _draw_animated_icon(draw, ix, iy, iw, ih, condition, temp_f):
+    """Draw an animated weather scene in the given rectangle."""
+    global _anim_frame, _rain_drops, _snow_flakes, _grass_blades
+    global _lightning_timer, _lightning_on
+    _anim_frame += 1
+    t = _anim_frame * 0.1  # time variable for smooth animation
+
+    cond = condition.lower()
+    is_hot = False
+    try:
+        is_hot = temp_f and int(temp_f) >= 95
+    except (ValueError, TypeError):
+        pass
+
+    cx, cy = ix + iw // 2, iy + ih // 2  # center
+
+    if 'thunder' in cond or 'storm' in cond:
+        # ── Thunderstorm: dark cloud + rain + lightning flashes ──
+        _draw_cloud(draw, cx - 40, iy + 10, 80, 35, (60, 60, 80))
+        # Lightning
+        _lightning_timer -= 1
+        if _lightning_timer <= 0:
+            _lightning_on = random.random() < 0.15
+            _lightning_timer = 2 if _lightning_on else random.randint(5, 20)
+        if _lightning_on:
+            # Flash background
+            draw.rectangle([ix, iy, ix+iw, iy+ih], fill=(60, 60, 90))
+            _draw_cloud(draw, cx - 40, iy + 10, 80, 35, (120, 120, 150))
+            # Lightning bolt
+            bx = cx + random.randint(-20, 20)
+            pts = [(bx, iy+45), (bx-8, iy+65), (bx+5, iy+63), (bx-12, iy+90)]
+            draw.line(pts, fill=(255, 255, 200), width=2)
+        # Rain
+        if not _rain_drops:
+            _init_rain(ix, iy + 45, iw, ih - 45)
+        _animate_rain(draw, ix, iy + 45, iw, ih - 45, (100, 140, 255))
+
+    elif 'snow' in cond or 'sleet' in cond:
+        # ── Snow: cloud + falling snowflakes ──
+        _draw_cloud(draw, cx - 35, iy + 10, 70, 30, (140, 150, 170))
+        if not _snow_flakes:
+            _init_snow(ix, iy + 40, iw, ih - 40)
+        for i in range(len(_snow_flakes)):
+            sx, sy, spd, drift = _snow_flakes[i]
+            sy += spd
+            sx += math.sin(t + drift * 3) * 1.5
+            if sy > iy + ih:
+                sy = iy + 40
+                sx = random.randint(ix, ix + iw)
+            _snow_flakes[i] = (sx, sy, spd, drift)
+            size = random.choice([2, 3])
+            draw.ellipse([sx-size, sy-size, sx+size, sy+size], fill=(220, 230, 255))
+
+    elif 'rain' in cond or 'drizzle' in cond:
+        # ── Rain: grey cloud + falling drops ──
+        _draw_cloud(draw, cx - 35, iy + 10, 70, 30, (100, 110, 130))
+        heavy = 'heavy' in cond
+        if not _rain_drops:
+            _init_rain(ix, iy + 40, iw, ih - 40, 35 if heavy else 20)
+        color = (80, 130, 255) if heavy else (100, 160, 255)
+        _animate_rain(draw, ix, iy + 40, iw, ih - 40, color)
+
+    elif 'fog' in cond or 'mist' in cond or 'haze' in cond:
+        # ── Fog: horizontal drifting lines ──
+        for i in range(8):
+            y_line = iy + 15 + i * (ih // 8)
+            x_off = math.sin(t * 0.5 + i * 0.7) * 20
+            alpha = 80 + int(math.sin(t * 0.3 + i) * 40)
+            color = (alpha, alpha + 10, alpha + 20)
+            draw.line([(ix + 5 + x_off, y_line), (ix + iw - 5 + x_off, y_line)],
+                     fill=color, width=2)
+
+    elif is_hot:
+        # ── ANGRY HOT SUN: red furious face ──
+        r = min(iw, ih) // 2 - 10
+        # Pulsing glow
+        pulse = math.sin(t * 3) * 5
+        glow_r = r + 8 + int(pulse)
+        draw.ellipse([cx-glow_r, cy-glow_r-5, cx+glow_r, cy+glow_r-5], fill=(80, 10, 0))
+        # Sun body
+        draw.ellipse([cx-r, cy-r-5, cx+r, cy+r-5], fill=(255, 50, 0))
+        # Angry eyebrows (angled down toward center)
+        eb_y = cy - r//3
+        draw.line([(cx-r//2, eb_y-8), (cx-r//5, eb_y+2)], fill=(120, 0, 0), width=3)
+        draw.line([(cx+r//2, eb_y-8), (cx+r//5, eb_y+2)], fill=(120, 0, 0), width=3)
+        # Angry eyes
+        draw.ellipse([cx-r//3-4, cy-8, cx-r//3+4, cy+4], fill=(120, 0, 0))
+        draw.ellipse([cx+r//3-4, cy-8, cx+r//3+4, cy+4], fill=(120, 0, 0))
+        # Angry mouth (wavy grimace)
+        mouth_y = cy + r // 3
+        pts = []
+        for mx in range(-r//3, r//3 + 1, 3):
+            my = mouth_y + int(math.sin(mx * 0.3 + t * 5) * 3) - 5
+            pts.append((cx + mx, my))
+        if len(pts) > 1:
+            draw.line(pts, fill=(120, 0, 0), width=2)
+        # Steam/heat waves rising
+        for i in range(3):
+            wx = cx - 20 + i * 20
+            for dy in range(0, 25, 3):
+                wy = cy - r - 15 - dy + int(math.sin(t * 4 + i + dy * 0.3) * 3)
+                alpha = max(0, 200 - dy * 8)
+                draw.point((wx + int(math.sin(t*2 + dy*0.2 + i)*4), wy), fill=(255, alpha, 0))
+
+    elif 'sun' in cond or 'clear' in cond:
+        # ── Sunny: bright yellow sun with rotating rays + grass blowing ──
+        r = min(iw, ih) // 2 - 20
+        sun_cy = cy - 15
+        # Rotating rays
+        for i in range(12):
+            angle = t * 0.5 + i * math.pi / 6
+            x1 = cx + int(math.cos(angle) * (r + 5))
+            y1 = sun_cy + int(math.sin(angle) * (r + 5))
+            x2 = cx + int(math.cos(angle) * (r + 18 + math.sin(t * 2 + i) * 5))
+            y2 = sun_cy + int(math.sin(angle) * (r + 18 + math.sin(t * 2 + i) * 5))
+            draw.line([(x1, y1), (x2, y2)], fill=(255, 220, 50), width=2)
+        # Sun body
+        draw.ellipse([cx-r, sun_cy-r, cx+r, sun_cy+r], fill=(255, 220, 50))
+        # Happy face
+        draw.ellipse([cx-r//4-3, sun_cy-4, cx-r//4+3, sun_cy+4], fill=(200, 150, 0))
+        draw.ellipse([cx+r//4-3, sun_cy-4, cx+r//4+3, sun_cy+4], fill=(200, 150, 0))
+        draw.arc([cx-r//3, sun_cy+2, cx+r//3, sun_cy+r//2], 0, 180, fill=(200, 150, 0), width=2)
+        # Grass at bottom
+        grass_y = iy + ih - 5
+        if not _grass_blades:
+            _init_grass(ix + 5, grass_y, iw - 10, 20)
+        for gx, gh, phase in _grass_blades:
+            sway = math.sin(t * 2 + phase) * 6
+            draw.line([(gx, grass_y), (gx + sway, grass_y - gh)], fill=(30, 180, 50), width=2)
+
+    elif 'cloud' in cond or 'overcast' in cond:
+        # ── Cloudy: multiple drifting clouds ──
+        for i, (off_x, off_y, size) in enumerate([(0, 0, 1.0), (-30, 20, 0.7), (25, 25, 0.8)]):
+            drift = math.sin(t * 0.3 + i * 2) * 8
+            shade = 100 + i * 20
+            _draw_cloud(draw, cx - 35 + off_x + drift, iy + 15 + off_y,
+                        int(70 * size), int(30 * size), (shade, shade+10, shade+20))
+
+    else:
+        # ── Partly cloudy default: sun peeking behind cloud ──
+        sun_x, sun_y = cx + 15, iy + 25
+        r = 18
+        for i in range(8):
+            angle = t * 0.4 + i * math.pi / 4
+            x1 = sun_x + int(math.cos(angle) * (r + 3))
+            y1 = sun_y + int(math.sin(angle) * (r + 3))
+            x2 = sun_x + int(math.cos(angle) * (r + 12))
+            y2 = sun_y + int(math.sin(angle) * (r + 12))
+            draw.line([(x1, y1), (x2, y2)], fill=(200, 180, 40), width=2)
+        draw.ellipse([sun_x-r, sun_y-r, sun_x+r, sun_y+r], fill=(255, 220, 60))
+        _draw_cloud(draw, cx - 40, iy + 30, 75, 35, (160, 170, 190))
+
+def _draw_cloud(draw, x, y, w, h, color):
+    """Draw a puffy cloud shape."""
+    # Three overlapping ellipses
+    draw.ellipse([x, y + h//3, x + w//2, y + h], fill=color)
+    draw.ellipse([x + w//4, y, x + w*3//4, y + h*2//3], fill=color)
+    draw.ellipse([x + w//2, y + h//4, x + w, y + h], fill=color)
+    # Bottom rectangle to fill gaps
+    draw.rectangle([x + w//6, y + h//2, x + w - w//6, y + h], fill=color)
+
+def _animate_rain(draw, ix, iy, iw, ih, color):
+    """Animate falling rain drops."""
+    global _rain_drops
+    for i in range(len(_rain_drops)):
+        rx, ry, spd, length = _rain_drops[i]
+        ry += spd
+        if ry > iy + ih:
+            ry = iy
+            rx = random.randint(ix, ix + iw)
+        _rain_drops[i] = (rx, ry, spd, length)
+        draw.line([(rx, ry), (rx - 2, ry + length)], fill=color, width=1)
 
 def init():
     """Initialize clock state. Fetches weather on first call."""
@@ -208,26 +391,6 @@ def _pct_color(pct):
         return ORANGE
     return RED
 
-def _get_weather_icon(condition):
-    """Return ASCII art lines for a weather condition, or None."""
-    cond_lower = condition.lower()
-    for key, lines in _WEATHER_ICONS.items():
-        if key in cond_lower:
-            return lines
-    # Fallback: check for partial matches
-    if 'rain' in cond_lower or 'drizzle' in cond_lower:
-        return _WEATHER_ICONS['rain']
-    if 'snow' in cond_lower or 'sleet' in cond_lower:
-        return _WEATHER_ICONS['snow']
-    if 'cloud' in cond_lower:
-        return _WEATHER_ICONS['cloudy']
-    if 'sun' in cond_lower or 'clear' in cond_lower:
-        return _WEATHER_ICONS['sunny']
-    if 'thunder' in cond_lower or 'storm' in cond_lower:
-        return _WEATHER_ICONS['thunder']
-    if 'fog' in cond_lower or 'mist' in cond_lower or 'haze' in cond_lower:
-        return _WEATHER_ICONS['fog']
-    return None
 
 # ── Main render ─────────────────────────────────────────────────────
 def render_frame(w=1920, h=440):
@@ -338,14 +501,13 @@ def render_frame(w=1920, h=440):
         draw.text((p2x + 8, wy_base + 132), condition,
                   fill=TEXT, font=font(24))
 
-        # Weather ASCII icon (right side of panel)
-        icon_lines = _get_weather_icon(condition)
-        if icon_lines:
-            icon_x = p2x + p2w - 170
-            icon_y = wy_base + 30
-            for i, line in enumerate(icon_lines):
-                draw.text((icon_x, icon_y + i * 18), line,
-                          fill=YELLOW, font=font(14))
+        # Animated weather icon (right side of panel)
+        icon_x = p2x + p2w - 170
+        icon_y = wy_base + 20
+        icon_w = 160
+        icon_h = 130
+        temp_f_val = _weather.get('temp_f', None)
+        _draw_animated_icon(draw, icon_x, icon_y, icon_w, icon_h, condition, temp_f_val)
 
         # Details grid — bottom half
         detail_y = wy_base + 170

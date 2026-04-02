@@ -711,7 +711,7 @@ def _mode_fps(name):
         'ticker':     1/30,  # 30fps — smooth scroll
         'nowplaying': 1/10,  # 10fps — progress bar updates
         'sysmon':     1/2,   # 2fps  — sensor data doesn't change faster
-        'clock':      1,     # 1fps  — seconds tick
+        'clock':      1/15,  # 15fps — animated weather icon
         'docker':     1/2,   # 2fps  — container stats refresh
         'netmon':     1/2,   # 2fps  — connection updates
         'pomodoro':   1,     # 1fps  — countdown seconds
