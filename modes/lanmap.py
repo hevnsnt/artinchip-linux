@@ -469,10 +469,14 @@ def render_frame(w=1920, h=440):
             draw.text((ip_x, mid_y - half_font), host['ip'],
                       fill=ip_color, font=df)
 
-            # Hostname
-            max_name = max(8, int(col_w * 0.04))
-            hostname = host['hostname'][:max_name] if host['hostname'] else '—'
-            draw.text((name_x, mid_y - half_font), hostname,
+            # Hostname — truncate to never overlap with IP
+            ip_end = ip_x + int(df.getlength(host['ip'])) + 8
+            name_start = max(name_x, ip_end)
+            avail_name_w = type_x - name_start - 8
+            hostname = host['hostname'] if host['hostname'] else '—'
+            while len(hostname) > 1 and df.getlength(hostname) > avail_name_w:
+                hostname = hostname[:-1]
+            draw.text((name_start, mid_y - half_font), hostname,
                       fill=GREEN if is_new else TEXT, font=df)
 
             # Type
