@@ -385,9 +385,8 @@ def render_frame(w=1920, h=440):
 
     # Column headers (only shown for first column, positions are relative)
     draw.text((pad_x + 26, col_y + 2), "IP ADDRESS", fill=TEXT_DIM, font=font(14))
-    draw.text((175, col_y + 2), "HOSTNAME", fill=TEXT_DIM, font=font(14))
-    draw.text((340, col_y + 2), "TYPE", fill=TEXT_DIM, font=font(14))
-    draw.text((420, col_y + 2), "VENDOR", fill=TEXT_DIM, font=font(14))
+    draw.text((200, col_y + 2), "HOSTNAME", fill=TEXT_DIM, font=font(14))
+    draw.text((420, col_y + 2), "TYPE", fill=TEXT_DIM, font=font(14))
 
     sep_y = col_y + col_h
     for i in range(2):
@@ -458,11 +457,10 @@ def render_frame(w=1920, h=440):
             _draw_glow_dot(img, x_off + 14, mid_y, 3, dot_color)
             draw = ImageDraw.Draw(img)
 
-            # Dynamic column positions based on column width
+            # Column positions — IP, hostname, type (no vendor)
             ip_x = x_off + 26
-            name_x = x_off + int(col_w * 0.30)
-            type_x = x_off + int(col_w * 0.65)
-            vendor_x = x_off + int(col_w * 0.80)
+            name_x = x_off + int(col_w * 0.35)
+            type_x = x_off + int(col_w * 0.75)
             df = font(data_font_size)
             half_font = data_font_size // 2
 
@@ -472,7 +470,7 @@ def render_frame(w=1920, h=440):
                       fill=ip_color, font=df)
 
             # Hostname
-            max_name = int(col_w * 0.04)
+            max_name = max(8, int(col_w * 0.04))
             hostname = host['hostname'][:max_name] if host['hostname'] else '—'
             draw.text((name_x, mid_y - half_font), hostname,
                       fill=GREEN if is_new else TEXT, font=df)
@@ -480,12 +478,6 @@ def render_frame(w=1920, h=440):
             # Type
             draw.text((type_x, mid_y - half_font), host['type'],
                       fill=GREEN if is_new else host['color'], font=df)
-
-            # Vendor (only if enough column width)
-            if col_w > 550:
-                vendor = host['vendor'][:25] if host['vendor'] else ''
-                draw.text((vendor_x, mid_y - half_font), vendor,
-                          fill=TEXT_DIM, font=font(data_font_size - 2))
 
     # Split page hosts across columns
     for col_idx in range(num_cols):
