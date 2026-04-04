@@ -6,6 +6,7 @@ Shows IPv4 address, hostname, and vendor/device type.
 
 import re
 import subprocess
+import threading
 import time
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
@@ -158,9 +159,13 @@ _cache = {
     'scanning': False,
     'error': None,
     'subnet': '192.168.1.0/24',
+    'known_ips': set(),       # IPs seen in previous scans
+    'new_ips': {},            # IP -> timestamp when first seen as "new"
 }
 
-SCAN_INTERVAL = 30  # seconds between scans
+SCAN_INTERVAL = 30   # seconds between scans
+NEW_HIGHLIGHT_SEC = 10  # how long new devices stay highlighted
+PAGE_ROTATE_SEC = 15  # seconds per page when paginating
 
 
 def _detect_subnet():
@@ -173,7 +178,6 @@ def _detect_subnet():
                 src_idx = parts.index('src') if 'src' in parts else -1
                 if src_idx > 0:
                     ip = parts[src_idx + 1]
-                    # Convert to /24 subnet
                     octets = ip.split('.')
                     return f"{octets[0]}.{octets[1]}.{octets[2]}.0/24"
     except Exception:
@@ -181,17 +185,48 @@ def _detect_subnet():
     return '192.168.1.0/24'
 
 
-def _scan_network():
-    """Run nmap ping scan and parse results."""
-    now = time.time()
-    if now - _cache['last_scan'] < SCAN_INTERVAL:
-        return
-    if _cache['scanning']:
-        return
+def _parse_nmap_output(output):
+    """Parse nmap -sn output into host list."""
+    hosts = []
+    lines = output.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith('Nmap scan report for'):
+            match = re.match(r'Nmap scan report for (?:(\S+) \()?(\d+\.\d+\.\d+\.\d+)\)?', line)
+            if not match:
+                match = re.match(r'Nmap scan report for (\d+\.\d+\.\d+\.\d+)', line)
+            if match:
+                groups = match.groups()
+                if len(groups) == 2 and groups[0]:
+                    hostname = groups[0].replace('.lan', '')
+                    ip = groups[1]
+                else:
+                    hostname = ''
+                    ip = groups[-1]
 
-    _cache['scanning'] = True
-    _cache['last_scan'] = now
+                vendor = ''
+                for j in range(i + 1, min(i + 4, len(lines))):
+                    if 'MAC Address:' in lines[j]:
+                        mac_match = re.search(r'MAC Address: \S+ \((.+)\)', lines[j])
+                        if mac_match:
+                            vendor = mac_match.group(1)
+                        break
 
+                device_type, device_color = _guess_device(hostname, vendor)
+                hosts.append({
+                    'ip': ip,
+                    'hostname': hostname,
+                    'vendor': vendor,
+                    'type': device_type,
+                    'color': device_color,
+                })
+        i += 1
+    return hosts
+
+
+def _do_scan():
+    """Background scan worker."""
     subnet = _cache['subnet']
     try:
         result = subprocess.run(
@@ -203,46 +238,22 @@ def _scan_network():
             _cache['scanning'] = False
             return
 
-        hosts = []
-        lines = result.stdout.splitlines()
-        i = 0
-        while i < len(lines):
-            line = lines[i]
-            if line.startswith('Nmap scan report for'):
-                # Parse hostname and IP
-                match = re.match(r'Nmap scan report for (?:(\S+) \()?(\d+\.\d+\.\d+\.\d+)\)?', line)
-                if not match:
-                    match = re.match(r'Nmap scan report for (\d+\.\d+\.\d+\.\d+)', line)
-                if match:
-                    groups = match.groups()
-                    if len(groups) == 2 and groups[0]:
-                        hostname = groups[0].replace('.lan', '')
-                        ip = groups[1]
-                    else:
-                        hostname = ''
-                        ip = groups[-1]
-
-                    # Look for MAC address on next lines
-                    vendor = ''
-                    for j in range(i + 1, min(i + 4, len(lines))):
-                        if 'MAC Address:' in lines[j]:
-                            mac_match = re.search(r'MAC Address: \S+ \((.+)\)', lines[j])
-                            if mac_match:
-                                vendor = mac_match.group(1)
-                            break
-
-                    device_type, device_color = _guess_device(hostname, vendor)
-                    hosts.append({
-                        'ip': ip,
-                        'hostname': hostname,
-                        'vendor': vendor,
-                        'type': device_type,
-                        'color': device_color,
-                    })
-            i += 1
-
-        # Sort by IP (numeric)
+        hosts = _parse_nmap_output(result.stdout)
         hosts.sort(key=lambda h: tuple(int(o) for o in h['ip'].split('.')))
+
+        # Detect new devices
+        now = time.time()
+        current_ips = {h['ip'] for h in hosts}
+        if _cache['scan_count'] > 0:
+            # Only flag new IPs after the first scan
+            for ip in current_ips - _cache['known_ips']:
+                _cache['new_ips'][ip] = now
+
+        # Expire old "new" highlights
+        _cache['new_ips'] = {ip: t for ip, t in _cache['new_ips'].items()
+                             if now - t < NEW_HIGHLIGHT_SEC}
+
+        _cache['known_ips'] = current_ips
         _cache['hosts'] = hosts
         _cache['scan_count'] += 1
         _cache['error'] = None
@@ -255,12 +266,28 @@ def _scan_network():
         _cache['error'] = str(e)[:60]
     finally:
         _cache['scanning'] = False
+        _cache['last_scan'] = time.time()
+
+
+def _scan_network():
+    """Kick off a background scan if it's time."""
+    now = time.time()
+    if now - _cache['last_scan'] < SCAN_INTERVAL:
+        return
+    if _cache['scanning']:
+        return
+
+    _cache['scanning'] = True
+    t = threading.Thread(target=_do_scan, daemon=True)
+    t.start()
 
 
 def init():
     _cache['subnet'] = _detect_subnet()
     _cache['last_scan'] = 0
     _cache['scan_count'] = 0
+    _cache['known_ips'] = set()
+    _cache['new_ips'] = {}
     _scan_network()
 
 
@@ -273,11 +300,29 @@ def render_frame(w=1920, h=440):
             _cache['subnet'] = _detect_subnet()
             _cache['_init_done'] = True
 
+    # Expire stale new highlights
+    now = time.time()
+    _cache['new_ips'] = {ip: t for ip, t in _cache['new_ips'].items()
+                         if now - t < NEW_HIGHLIGHT_SEC}
+
     img = _get_bg(w, h)
     draw = ImageDraw.Draw(img)
 
     pad_x = 20
-    hosts = _cache['hosts']
+    new_ips = _cache['new_ips']
+
+    # Sort: new devices first (by time seen), then rest by IP
+    hosts_sorted = []
+    rest = []
+    for entry in _cache['hosts']:
+        if entry['ip'] in new_ips:
+            hosts_sorted.append(entry)
+        else:
+            rest.append(entry)
+    # New ones sorted newest first
+    hosts_sorted.sort(key=lambda e: -new_ips.get(e['ip'], 0))
+    hosts_sorted.extend(rest)
+    hosts = hosts_sorted
 
     # ── Header ──
     header_h = 44
@@ -297,125 +342,150 @@ def render_frame(w=1920, h=440):
     draw = ImageDraw.Draw(img)
     draw.text((pad_x, 10), "NETWORK DEVICES", fill=ACCENT, font=font(24))
 
-    status_text = f"{len(hosts)} hosts"
+    # Status — show scanning indicator prominently
     if _cache['scanning']:
-        status_text += "  scanning..."
+        status_text = f"{len(hosts)} hosts  SCANNING..."
+        status_color = YELLOW
     elif _cache['scan_count'] > 0:
         ago = int(time.time() - _cache['last_scan'])
-        status_text += f"  scanned {ago}s ago"
+        status_text = f"{len(hosts)} hosts  scanned {ago}s ago"
+        status_color = TEXT
+    else:
+        status_text = "initializing..."
+        status_color = YELLOW
+    # New device count
+    if new_ips:
+        status_text += f"  ({len(new_ips)} new)"
     draw.text((w - pad_x - font(20).getlength(status_text), 14),
-              status_text, fill=TEXT, font=font(20))
+              status_text, fill=status_color, font=font(20))
 
-    # ── Error/empty state ──
-    if _cache['error'] and not hosts:
+    # ── Scanning / empty state — show a message but DON'T return blank ──
+    if not hosts and _cache['error']:
         draw.text((w // 2 - 100, h // 2 - 12), _cache['error'],
                   fill=RED, font=font(24))
-        img = Image.alpha_composite(img, _get_scanlines(w, h))
-        out = Image.new('RGB', (w, h), BG)
-        out.paste(img, (0, 0), img)
-        return out
 
     if not hosts:
-        draw.text((w // 2 - 80, h // 2 - 12), "Scanning network...",
-                  fill=TEXT_DIM, font=font(24))
+        # Show scanning animation dots
+        dots = '.' * (int(time.time() * 2) % 4)
+        draw.text((w // 2 - 120, h // 2 - 12),
+                  f"Scanning {_cache['subnet']}{dots}",
+                  fill=ACCENT, font=font(28))
         img = Image.alpha_composite(img, _get_scanlines(w, h))
         out = Image.new('RGB', (w, h), BG)
         out.paste(img, (0, 0), img)
         return out
 
-    # ── Column headers ──
-    col_y = header_h + 6
-    col_h = 24
+    # ── Column header ──
+    col_y = header_h + 4
+    col_h = 22
     for row in range(col_h):
         t = row / max(col_h - 1, 1)
         c = _lerp_color((12, 16, 28), (8, 11, 20), t)
         draw.line([(0, col_y + row), (w, col_y + row)], fill=c)
 
-    col_status_x = pad_x
-    col_ip_x = pad_x + 30
-    col_host_x = 280
-    col_type_x = 620
-    col_vendor_x = 780
+    # Column headers (only shown for first column, positions are relative)
+    draw.text((pad_x + 26, col_y + 2), "IP ADDRESS", fill=TEXT_DIM, font=font(14))
+    draw.text((175, col_y + 2), "HOSTNAME", fill=TEXT_DIM, font=font(14))
+    draw.text((340, col_y + 2), "TYPE", fill=TEXT_DIM, font=font(14))
+    draw.text((420, col_y + 2), "VENDOR", fill=TEXT_DIM, font=font(14))
 
-    draw.text((col_ip_x, col_y + 3), "IP ADDRESS", fill=TEXT_DIM, font=font(18))
-    draw.text((col_host_x, col_y + 3), "HOSTNAME", fill=TEXT_DIM, font=font(18))
-    draw.text((col_type_x, col_y + 3), "TYPE", fill=TEXT_DIM, font=font(18))
-    draw.text((col_vendor_x, col_y + 3), "VENDOR", fill=TEXT_DIM, font=font(18))
-
-    # Separator
     sep_y = col_y + col_h
-    for i in range(3):
-        a = int(120 * (1.0 - i / 3))
+    for i in range(2):
+        a = int(100 * (1.0 - i / 2))
         draw.line([(0, sep_y + i), (w, sep_y + i)], fill=ACCENT + (a,))
 
-    # ── Two-column layout for more hosts ──
-    content_top = sep_y + 4
-    row_h = 26
-    avail_h = h - content_top - 16
+    # ── Dynamic multi-column layout with pagination ──
+    content_top = sep_y + 3
+    row_h = 24
+    avail_h = h - content_top - 12
     rows_per_col = max(1, avail_h // row_h)
 
-    # If more hosts than one column can show, use two columns
-    use_two_cols = len(hosts) > rows_per_col
-    if use_two_cols:
-        col1_hosts = hosts[:rows_per_col]
-        col2_hosts = hosts[rows_per_col:rows_per_col * 2]
-        col2_offset = w // 2
-    else:
-        col1_hosts = hosts[:rows_per_col]
-        col2_hosts = []
-        col2_offset = 0
+    # Use up to 4 columns
+    max_cols = 4
+    hosts_per_page = rows_per_col * max_cols
 
-    def _draw_host_rows(host_list, x_offset, start_y):
+    # Paginate if needed
+    total_pages = max(1, -(-len(hosts) // hosts_per_page))
+    current_page = int(time.time() / PAGE_ROTATE_SEC) % total_pages
+    page_start = current_page * hosts_per_page
+    page_hosts = hosts[page_start:page_start + hosts_per_page]
+
+    # Calculate columns needed for this page
+    num_cols = max(1, -(-len(page_hosts) // rows_per_col))
+    num_cols = min(num_cols, max_cols)
+    col_w = w // num_cols
+
+    def _draw_host_rows(host_list, col_idx, start_y):
         nonlocal draw
+        x_off = col_idx * col_w
         for i, host in enumerate(host_list):
             ry = start_y + i * row_h
-            if ry + row_h > h - 10:
+            if ry + row_h > h - 8:
                 break
 
-            # Alternating row
-            if i % 2 == 0:
+            is_new = host['ip'] in new_ips
+
+            # Row background
+            if is_new:
+                # Bright green highlight for new devices
+                for row in range(row_h):
+                    draw.line([(x_off, ry + row), (x_off + col_w - 2, ry + row)],
+                              fill=(0, 40, 20))
+            elif i % 2 == 0:
                 for row in range(row_h):
                     t = row / max(row_h - 1, 1)
                     rc = _lerp_color((12, 16, 28), (10, 13, 22), t)
-                    draw.line([(x_offset, ry + row),
-                               (x_offset + (w // 2 if use_two_cols else w), ry + row)],
+                    draw.line([(x_off, ry + row), (x_off + col_w - 2, ry + row)],
                               fill=rc)
 
             mid_y = ry + row_h // 2
 
-            # Status dot
-            _draw_glow_dot(img, x_offset + pad_x + 8, mid_y, 4, host['color'])
+            # Dot — green glow for new, normal color otherwise
+            dot_color = GREEN if is_new else host['color']
+            _draw_glow_dot(img, x_off + 14, mid_y, 3, dot_color)
             draw = ImageDraw.Draw(img)
 
             # IP
-            draw.text((x_offset + col_ip_x, mid_y - 9), host['ip'],
-                      fill=TEXT_BRIGHT, font=font(18))
+            ip_color = GREEN if is_new else TEXT_BRIGHT
+            draw.text((x_off + 26, mid_y - 7), host['ip'],
+                      fill=ip_color, font=font(15))
 
             # Hostname
-            hostname = host['hostname'][:22] if host['hostname'] else '—'
-            draw.text((x_offset + (col_host_x if not use_two_cols else 200),
-                       mid_y - 9), hostname, fill=TEXT, font=font(18))
+            max_name = 14 if num_cols >= 3 else 18
+            hostname = host['hostname'][:max_name] if host['hostname'] else '—'
+            draw.text((x_off + 155, mid_y - 7), hostname,
+                      fill=GREEN if is_new else TEXT, font=font(15))
 
             # Type
-            type_x = col_type_x if not use_two_cols else 440
-            draw.text((x_offset + type_x, mid_y - 9), host['type'],
-                      fill=host['color'], font=font(18))
+            draw.text((x_off + 320, mid_y - 7), host['type'],
+                      fill=GREEN if is_new else host['color'], font=font(15))
 
-            # Vendor (only in single-column mode — not enough space in 2-col)
-            if not use_two_cols:
-                vendor = host['vendor'][:40] if host['vendor'] else ''
-                draw.text((x_offset + col_vendor_x, mid_y - 9), vendor,
-                          fill=TEXT_DIM, font=font(16))
+            # Vendor (truncated to fit)
+            if num_cols <= 2:
+                vendor = host['vendor'][:30] if host['vendor'] else ''
+                draw.text((x_off + 400, mid_y - 7), vendor,
+                          fill=TEXT_DIM, font=font(14))
 
-    _draw_host_rows(col1_hosts, 0, content_top)
-    if col2_hosts:
-        # Draw separator line between columns
-        for y in range(content_top, h - 10):
-            draw.point((col2_offset - 2, y), fill=ACCENT + (30,))
-        _draw_host_rows(col2_hosts, col2_offset, content_top)
+    # Split page hosts across columns
+    for col_idx in range(num_cols):
+        start = col_idx * rows_per_col
+        end = start + rows_per_col
+        col_hosts = page_hosts[start:end]
+        if not col_hosts:
+            break
+        _draw_host_rows(col_hosts, col_idx, content_top)
 
-    # Show overflow count
-    total_shown = len(col1_hosts) + len(col2_hosts)
+        # Column separator line
+        if col_idx < num_cols - 1 and col_hosts:
+            sx = (col_idx + 1) * col_w - 1
+            for y in range(content_top, h - 10):
+                draw.point((sx, y), fill=ACCENT + (35,))
+
+    # Page indicator (if paginating)
+    total_shown = len(page_hosts)
+    if total_pages > 1:
+        page_text = f"Page {current_page + 1}/{total_pages}"
+        draw.text((w // 2 - 40, h - 26), page_text, fill=ACCENT, font=font(16))
     if len(hosts) > total_shown:
         extra = len(hosts) - total_shown
         draw.text((pad_x, h - 30), f"+ {extra} more devices",
