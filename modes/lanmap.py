@@ -394,25 +394,45 @@ def render_frame(w=1920, h=440):
         a = int(100 * (1.0 - i / 2))
         draw.line([(0, sep_y + i), (w, sep_y + i)], fill=ACCENT + (a,))
 
-    # ── Dynamic multi-column layout with pagination ──
+    # ── Dynamic layout — scale font/rows to fill the screen ──
     content_top = sep_y + 3
-    row_h = 24
     avail_h = h - content_top - 12
+    n_hosts = len(hosts)
+
+    # Try column counts from fewest to most, pick the one that fits all hosts
+    # with the largest possible row height (and thus font)
+    max_cols = 4
+    min_row_h = 20   # smallest acceptable row height
+    max_row_h = 36   # largest row height (big font)
+
+    best_cols = 1
+    best_row_h = max_row_h
+    for try_cols in range(1, max_cols + 1):
+        rows_needed = -(-n_hosts // try_cols)  # ceiling division
+        try_row_h = avail_h // max(rows_needed, 1)
+        try_row_h = max(min_row_h, min(max_row_h, try_row_h))
+        fits = rows_needed * try_row_h <= avail_h
+        if fits:
+            best_cols = try_cols
+            best_row_h = try_row_h
+            break
+        best_cols = try_cols
+        best_row_h = try_row_h
+
+    num_cols = best_cols
+    row_h = best_row_h
     rows_per_col = max(1, avail_h // row_h)
 
-    # Use up to 4 columns
-    max_cols = 4
-    hosts_per_page = rows_per_col * max_cols
+    # Font scales with row height
+    data_font_size = max(13, min(18, row_h - 8))
 
-    # Paginate if needed
-    total_pages = max(1, -(-len(hosts) // hosts_per_page))
+    # Paginate only if still can't fit
+    hosts_per_page = rows_per_col * num_cols
+    total_pages = max(1, -(-n_hosts // hosts_per_page))
     current_page = int(time.time() / PAGE_ROTATE_SEC) % total_pages
     page_start = current_page * hosts_per_page
     page_hosts = hosts[page_start:page_start + hosts_per_page]
 
-    # Calculate columns needed for this page
-    num_cols = max(1, -(-len(page_hosts) // rows_per_col))
-    num_cols = min(num_cols, max_cols)
     col_w = w // num_cols
 
     def _draw_host_rows(host_list, col_idx, start_y):
@@ -445,26 +465,34 @@ def render_frame(w=1920, h=440):
             _draw_glow_dot(img, x_off + 14, mid_y, 3, dot_color)
             draw = ImageDraw.Draw(img)
 
+            # Dynamic column positions based on column width
+            ip_x = x_off + 26
+            name_x = x_off + int(col_w * 0.30)
+            type_x = x_off + int(col_w * 0.65)
+            vendor_x = x_off + int(col_w * 0.80)
+            df = font(data_font_size)
+            half_font = data_font_size // 2
+
             # IP
             ip_color = GREEN if is_new else TEXT_BRIGHT
-            draw.text((x_off + 26, mid_y - 7), host['ip'],
-                      fill=ip_color, font=font(15))
+            draw.text((ip_x, mid_y - half_font), host['ip'],
+                      fill=ip_color, font=df)
 
             # Hostname
-            max_name = 14 if num_cols >= 3 else 18
+            max_name = int(col_w * 0.04)
             hostname = host['hostname'][:max_name] if host['hostname'] else '—'
-            draw.text((x_off + 155, mid_y - 7), hostname,
-                      fill=GREEN if is_new else TEXT, font=font(15))
+            draw.text((name_x, mid_y - half_font), hostname,
+                      fill=GREEN if is_new else TEXT, font=df)
 
             # Type
-            draw.text((x_off + 320, mid_y - 7), host['type'],
-                      fill=GREEN if is_new else host['color'], font=font(15))
+            draw.text((type_x, mid_y - half_font), host['type'],
+                      fill=GREEN if is_new else host['color'], font=df)
 
-            # Vendor (truncated to fit)
-            if num_cols <= 2:
-                vendor = host['vendor'][:30] if host['vendor'] else ''
-                draw.text((x_off + 400, mid_y - 7), vendor,
-                          fill=TEXT_DIM, font=font(14))
+            # Vendor (only if enough column width)
+            if col_w > 550:
+                vendor = host['vendor'][:25] if host['vendor'] else ''
+                draw.text((vendor_x, mid_y - half_font), vendor,
+                          fill=TEXT_DIM, font=font(data_font_size - 2))
 
     # Split page hosts across columns
     for col_idx in range(num_cols):
