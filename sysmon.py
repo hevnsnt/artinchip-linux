@@ -16,20 +16,34 @@ import time
 import subprocess
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-# ── Colors ──────────────────────────────────────────────────────────
-BG          = (8, 10, 16)
-PANEL_BG    = (14, 18, 28)
-ACCENT      = (0, 180, 255)
-ACCENT_DIM  = (0, 60, 120)
-TEXT        = (210, 215, 230)
-TEXT_DIM    = (80, 90, 110)
-TEXT_BRIGHT = (245, 248, 255)
-GREEN       = (0, 230, 120)
-YELLOW      = (255, 210, 0)
-RED         = (255, 70, 70)
-ORANGE      = (255, 150, 30)
-CYAN        = (0, 220, 240)
-PURPLE      = (140, 100, 255)
+# ── Colors (vivid, saturated for maximum impact) ──────────────────
+BG          = (5, 7, 12)
+PANEL_BG    = (10, 14, 24)
+ACCENT      = (0, 210, 255)
+ACCENT_DIM  = (0, 80, 150)
+TEXT        = (220, 225, 240)
+TEXT_DIM    = (65, 75, 100)
+TEXT_BRIGHT = (252, 254, 255)
+GREEN       = (0, 255, 140)
+YELLOW      = (255, 225, 0)
+RED         = (255, 50, 50)
+ORANGE      = (255, 165, 30)
+CYAN        = (0, 240, 255)
+PURPLE      = (160, 110, 255)
+
+# Pre-computed scanline overlay (created once, reused every frame)
+_scanline_cache = {}
+
+def _get_scanlines(w, h):
+    """Semi-transparent horizontal scanlines for HUD effect. Cached."""
+    key = (w, h)
+    if key not in _scanline_cache:
+        sl = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+        sd = ImageDraw.Draw(sl)
+        for y in range(0, h, 4):
+            sd.line([(0, y), (w, y)], fill=(0, 0, 0, 16))
+        _scanline_cache[key] = sl
+    return _scanline_cache[key]
 
 # ── Font cache ──────────────────────────────────────────────────────
 _fonts = {}
@@ -316,60 +330,120 @@ def _draw_gradient_bg(img, w, h):
 
 # ── Panel drawing ──────────────────────────────────────────────────
 def draw_panel(draw, img, x, y, w, h, title=""):
-    """Draw a panel with subtle gradient fill and glowing accent line."""
-    # Panel body: subtle vertical gradient
-    top_c = (16, 20, 32)
-    bot_c = (12, 15, 24)
+    """Draw a panel with gradient fill, glowing edges, and accent line."""
+    # Panel body: vertical gradient
+    top_c = (14, 18, 30)
+    bot_c = (8, 11, 20)
     for row in range(h):
         t = row / max(h - 1, 1)
         c = _lerp_color(top_c, bot_c, t)
         draw.line([(x, y + row), (x + w, y + row)], fill=c)
-    # Glowing accent line at top
-    pad = 8
-    glow_w = w - pad * 2
-    glow_h = 14
+
+    # Glowing top accent line — wider, brighter
+    glow_w = w
+    glow_h = 20
     glow = Image.new('RGBA', (glow_w, glow_h), (0, 0, 0, 0))
     gd = ImageDraw.Draw(glow)
-    gd.rectangle([0, 0, glow_w, 2], fill=ACCENT + (180,))
-    gd.rectangle([0, 2, glow_w, 4], fill=ACCENT + (50,))
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=3))
-    img.paste(glow, (x + pad, y), glow)
+    gd.rectangle([0, 0, glow_w, 2], fill=ACCENT + (220,))
+    gd.rectangle([0, 2, glow_w, 6], fill=ACCENT + (60,))
+    glow = glow.filter(ImageFilter.GaussianBlur(radius=5))
+    img.paste(glow, (x, y - 2), glow)
+
+    # Subtle glowing side edges
+    side_h = h
+    side_w = 12
+    for side_x in [x, x + w - 1]:
+        side = Image.new('RGBA', (side_w, side_h), (0, 0, 0, 0))
+        sd = ImageDraw.Draw(side)
+        sd.line([(side_w // 2, 0), (side_w // 2, side_h)], fill=ACCENT + (30,))
+        side = side.filter(ImageFilter.GaussianBlur(radius=3))
+        img.paste(side, (side_x - side_w // 2, y), side)
+
     if title:
         draw.text((x + 10, y + 6), title, fill=ACCENT, font=font(13))
 
 # ── Glow bar ───────────────────────────────────────────────────────
 def draw_glow_bar(draw, img, x, y, w, h, pct, color):
-    """Draw a horizontal progress bar with soft glow halo."""
-    # Bar background (dark inset)
+    """Draw a horizontal progress bar with dramatic glow halo."""
     draw.rectangle([x, y, x + w, y + h], fill=(12, 15, 22))
 
     fill_w = max(0, int(w * min(pct, 100) / 100))
     if fill_w <= 0:
         return
 
-    # Glow layer (small, cropped around bar region)
-    pad = 10
+    # Strong glow layer
+    pad = 14
     gw, gh = fill_w + pad * 2, h + pad * 2
     if gw < 1 or gh < 1:
         return
     glow = Image.new('RGBA', (gw, gh), (0, 0, 0, 0))
     gd = ImageDraw.Draw(glow)
-    gd.rectangle([pad, pad, pad + fill_w, pad + h], fill=color + (70,))
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=6))
-    gx, gy = x - pad, y - pad
-    img.paste(glow, (gx, gy), glow)
+    gd.rectangle([pad, pad, pad + fill_w, pad + h], fill=color + (100,))
+    glow = glow.filter(ImageFilter.GaussianBlur(radius=10))
+    img.paste(glow, (x - pad, y - pad), glow)
 
-    # Filled bar body (slightly dimmed)
-    dim = tuple(max(0, c - 50) for c in color)
-    draw.rectangle([x + 1, y + 1, x + fill_w - 1, y + h - 1], fill=dim)
+    # Gradient fill: dim at left, bright at right
+    for col in range(fill_w):
+        t = col / max(fill_w - 1, 1)
+        c = _lerp_color(tuple(max(0, v - 80) for v in color), color, t * 0.8 + 0.2)
+        draw.line([(x + 1 + col, y + 1), (x + 1 + col, y + h - 1)], fill=c)
 
     # Bright leading edge
-    tip_w = min(4, fill_w)
-    draw.rectangle([x + fill_w - tip_w, y + 1, x + fill_w, y + h - 1], fill=color)
+    tip_w = min(5, fill_w)
+    bright = tuple(min(255, c + 60) for c in color)
+    draw.rectangle([x + fill_w - tip_w, y, x + fill_w, y + h], fill=bright)
 
-    # Soft highlight line on top edge of fill
-    hl = tuple(min(255, c + 80) for c in color)
+    # Top highlight
+    hl = tuple(min(255, c + 100) for c in color)
     draw.line([(x + 1, y + 1), (x + fill_w - 1, y + 1)], fill=hl)
+
+def draw_arc_gauge(draw, img, cx, cy, radius, thickness, pct, color):
+    """Draw a dramatic semi-circular arc gauge with glow."""
+    bbox = [cx - radius, cy - radius, cx + radius, cy + radius]
+
+    # Background arc
+    draw.arc(bbox, 200, 340, fill=(25, 30, 45), width=thickness)
+
+    # Filled arc with glow
+    end_angle = 200 + int(140 * min(pct, 100) / 100)
+    if pct > 0:
+        # Wide soft glow (atmospheric)
+        gpad = 30
+        gsize = radius * 2 + gpad * 2
+        glow = Image.new('RGBA', (gsize, gsize), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(glow)
+        gbbox = [gpad, gpad, gpad + radius * 2, gpad + radius * 2]
+        gd.arc(gbbox, 200, end_angle, fill=color + (80,), width=thickness + 16)
+        glow = glow.filter(ImageFilter.GaussianBlur(radius=12))
+        img.paste(glow, (cx - radius - gpad, cy - radius - gpad), glow)
+
+        # Tight bright glow (core)
+        glow2 = Image.new('RGBA', (gsize, gsize), (0, 0, 0, 0))
+        gd2 = ImageDraw.Draw(glow2)
+        gd2.arc(gbbox, 200, end_angle, fill=color + (160,), width=thickness + 4)
+        glow2 = glow2.filter(ImageFilter.GaussianBlur(radius=5))
+        img.paste(glow2, (cx - radius - gpad, cy - radius - gpad), glow2)
+
+        # Sharp filled arc
+        draw.arc(bbox, 200, end_angle, fill=color, width=thickness)
+
+        # Bright tip at the end
+        import math
+        angle_rad = math.radians(end_angle)
+        tip_x = cx + int(radius * math.cos(angle_rad))
+        tip_y = cy + int(radius * math.sin(angle_rad))
+        bright = tuple(min(255, c + 80) for c in color)
+        draw.ellipse([tip_x - 4, tip_y - 4, tip_x + 4, tip_y + 4], fill=bright)
+
+    # Tick marks
+    import math
+    for i in range(0, 101, 25):
+        angle = math.radians(200 + 140 * i / 100)
+        ix = cx + int((radius + thickness // 2 + 4) * math.cos(angle))
+        iy = cy + int((radius + thickness // 2 + 4) * math.sin(angle))
+        ox = cx + int((radius + thickness // 2 + 8) * math.cos(angle))
+        oy = cy + int((radius + thickness // 2 + 8) * math.sin(angle))
+        draw.line([(ix, iy), (ox, oy)], fill=TEXT_DIM, width=1)
 
 # ── Glow sparkline ─────────────────────────────────────────────────
 def draw_sparkline(draw, img, x, y, w, h, data, color, max_val=None):
@@ -402,18 +476,18 @@ def draw_sparkline(draw, img, x, y, w, h, data, color, max_val=None):
         top_fill.append((px, min(py + band_h, y + h)))
     draw.polygon(top_fill, fill=brighter)
 
-    # Glow on the line itself (small cropped region)
-    pad = 6
+    # Strong glow on the line
+    pad = 10
     gw, gh = w + pad * 2, h + pad * 2
     glow = Image.new('RGBA', (gw, gh), (0, 0, 0, 0))
     gd = ImageDraw.Draw(glow)
     shifted = [(px - x + pad, py - y + pad) for px, py in points]
-    gd.line(shifted, fill=color + (100,), width=4)
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=4))
+    gd.line(shifted, fill=color + (140,), width=6)
+    glow = glow.filter(ImageFilter.GaussianBlur(radius=7))
     img.paste(glow, (x - pad, y - pad), glow)
 
-    # Sharp line on top
-    draw.line(points, fill=color, width=2)
+    # Sharp bright line on top
+    draw.line(points, fill=tuple(min(255, c + 40) for c in color), width=2)
 
 # ── Glow core bars ─────────────────────────────────────────────────
 def draw_core_bars(draw, img, x, y, w, h, core_pcts):
@@ -493,6 +567,26 @@ def render_frame(w=1920, h=440):
     _draw_gradient_bg(img, w, h)
     draw = ImageDraw.Draw(img)
 
+    # Background grid — visible but not distracting
+    grid_color = (18, 24, 38, 50)
+    for gx in range(0, w, 40):
+        draw.line([(gx, 0), (gx, h)], fill=grid_color)
+    for gy in range(0, h, 40):
+        draw.line([(0, gy), (w, gy)], fill=grid_color)
+    # Glowing dots at grid intersections
+    for gx in range(0, w, 80):
+        for gy in range(0, h, 80):
+            draw.ellipse([gx - 2, gy - 2, gx + 2, gy + 2], fill=ACCENT + (25,))
+            draw.ellipse([gx - 1, gy - 1, gx + 1, gy + 1], fill=ACCENT + (45,))
+
+    # Bottom horizon glow — atmospheric depth
+    horizon = Image.new('RGBA', (w, 60), (0, 0, 0, 0))
+    hd = ImageDraw.Draw(horizon)
+    for i in range(60):
+        a = int(35 * (1.0 - i / 60))
+        hd.line([(0, 59 - i), (w, 59 - i)], fill=(0, 100, 180, a))
+    img.paste(horizon, (0, h - 60), horizon)
+
     pad = 8
     gap = 6
     py0 = pad                # panel top
@@ -500,47 +594,46 @@ def render_frame(w=1920, h=440):
     bot = py0 + ph           # panel bottom
 
     # ═══════════════════════════════════════════════════════════════
-    # Panel 1: CPU (x=8, w=470)
+    # Panel 1: CPU — arc gauge + core bars + sparkline
     # ═══════════════════════════════════════════════════════════════
     p1x, p1w = pad, 470
     draw_panel(draw, img, p1x, py0, p1w, ph, "CPU")
 
     model = read_cpu_model()
     short_model = model.replace('(R)', '').replace('(TM)', '').replace('CPU ', '').strip()[:34]
-    draw.text((p1x + 10, py0 + 22), short_model, fill=TEXT_DIM, font=font(12))
+    draw.text((p1x + 10, py0 + 22), short_model, fill=TEXT_DIM, font=font(11))
 
     total_cpu = _cpu_history[-1] if _cpu_history else 0
-    draw_hero_text(draw, img, p1x + 10, py0 + 38, f"{total_cpu:.0f}%",
-                   pct_color(total_cpu), 52)
-    draw.text((p1x + 150, py0 + 42), "Load", fill=TEXT_DIM, font=font(11))
-    draw.text((p1x + 150, py0 + 58), f"{load1:.1f}  {load5:.1f}  {load15:.1f}",
-              fill=TEXT, font=font(14))
+    cpu_color = pct_color(total_cpu)
 
-    # Per-core bars
-    cores_y = py0 + 100
-    cores_h = ph - 200
-    draw_core_bars(draw, img, p1x + 10, cores_y, p1w - 20, cores_h, core_pcts)
+    # Arc gauge — left side of CPU panel
+    gauge_r = 72
+    gauge_cx = p1x + 10 + gauge_r + 10
+    gauge_cy = py0 + 60 + gauge_r
+    draw_arc_gauge(draw, img, gauge_cx, gauge_cy, gauge_r, 10, total_cpu, cpu_color)
+    # Percentage inside the arc
+    draw_hero_text(draw, img, gauge_cx - 38, gauge_cy - 30, f"{total_cpu:.0f}%",
+                   cpu_color, 40)
+    draw.text((gauge_cx - 18, gauge_cy + 4), "CPU", fill=TEXT_DIM, font=font(13))
 
-    # Core labels
-    n_cores = len(core_pcts)
-    if n_cores > 0:
-        bar_w = max(3, (p1w - 20 - n_cores + 1) // n_cores)
-        total_bw = n_cores * bar_w + (n_cores - 1)
-        offset = p1x + 10 + (p1w - 20 - total_bw) // 2
-        for i in range(n_cores):
-            bx = offset + i * (bar_w + 1)
-            if n_cores <= 12 or i % 2 == 0:
-                draw.text((bx, cores_y + cores_h + 3), str(i), fill=TEXT_DIM, font=font(9))
+    # Load averages — right of arc
+    lx = gauge_cx + gauge_r + 20
+    draw.text((lx, py0 + 40), "LOAD", fill=TEXT_DIM, font=font(11))
+    draw.text((lx, py0 + 56), f"{load1:.1f}", fill=TEXT_BRIGHT, font=font(22))
+    draw.text((lx, py0 + 82), f"{load5:.1f}  {load15:.1f}", fill=TEXT_DIM, font=font(14))
 
-    # CPU sparkline
-    spark_h = 80
+    # Per-core bars — right of arc, below load
+    cores_y = py0 + 110
+    cores_h = 90
+    cores_x = lx
+    cores_w = p1x + p1w - lx - 10
+    draw_core_bars(draw, img, cores_x, cores_y, cores_w, cores_h, core_pcts)
+
+    # CPU sparkline — full width at bottom
+    spark_h = 70
     spark_y = bot - spark_h - 10
-    draw.text((p1x + 10, spark_y - 2), "60s", fill=TEXT_DIM, font=font(10))
-    draw_sparkline(draw, img, p1x + 34, spark_y, p1w - 44, spark_h,
+    draw_sparkline(draw, img, p1x + 10, spark_y, p1w - 20, spark_h,
                    _cpu_history, ACCENT, max_val=100)
-    if _cpu_history:
-        draw.text((p1x + p1w - 52, spark_y + 4), f"{_cpu_history[-1]:.0f}%",
-                  fill=pct_color(_cpu_history[-1]), font=font(13))
 
     # ═══════════════════════════════════════════════════════════════
     # Panel 2: Memory + Disk + Swap (x=484, w=274)
@@ -653,7 +746,7 @@ def render_frame(w=1920, h=440):
                   fill=TEXT, font=font(20))
         draw_glow_bar(draw, img, p4x + 10, vy + 46, p4w - 20, 18, vram_pct, CYAN)
 
-        # Power / Clock
+        # Power / Clock (hide if N/A)
         try:
             out = subprocess.run(
                 ['nvidia-smi', '--query-gpu=power.draw,clocks.current.graphics',
@@ -663,8 +756,12 @@ def render_frame(w=1920, h=440):
                 parts = out.stdout.strip().split(', ')
                 power = parts[0].strip()
                 clock = parts[1].strip()
-                draw.text((p4x + 10, bot - 38), f"{power}W", fill=YELLOW, font=font(16))
-                draw.text((p4x + 100, bot - 38), f"{clock} MHz", fill=TEXT, font=font(16))
+                bx = p4x + 10
+                if power and '[N/A]' not in power:
+                    draw.text((bx, bot - 38), f"{power}W", fill=YELLOW, font=font(16))
+                    bx += 90
+                if clock and '[N/A]' not in clock:
+                    draw.text((bx, bot - 38), f"{clock} MHz", fill=TEXT, font=font(16))
         except Exception:
             pass
     else:
@@ -724,13 +821,17 @@ def render_frame(w=1920, h=440):
     draw.text((p5x + 72, info_y + row_gap * 2), time.strftime("%Y-%m-%d %H:%M:%S"),
               fill=TEXT, font=font(14))
 
-    # Bottom accent glow line
-    bottom_glow = Image.new('RGBA', (w, 10), (0, 0, 0, 0))
+    # Bottom accent glow line — brighter
+    bottom_glow = Image.new('RGBA', (w, 16), (0, 0, 0, 0))
     bgd = ImageDraw.Draw(bottom_glow)
-    bgd.rectangle([0, 4, w, 6], fill=ACCENT + (100,))
-    bottom_glow = bottom_glow.filter(ImageFilter.GaussianBlur(radius=3))
-    img.paste(bottom_glow, (0, h - 8), bottom_glow)
-    draw.rectangle([0, h - 2, w, h], fill=ACCENT_DIM)
+    bgd.rectangle([0, 6, w, 8], fill=ACCENT + (160,))
+    bgd.rectangle([0, 8, w, 12], fill=ACCENT + (40,))
+    bottom_glow = bottom_glow.filter(ImageFilter.GaussianBlur(radius=4))
+    img.paste(bottom_glow, (0, h - 12), bottom_glow)
+
+    # Scanline overlay — subtle CRT/HUD texture
+    scanlines = _get_scanlines(w, h)
+    img = Image.alpha_composite(img, scanlines)
 
     # Convert RGBA to RGB for output
     out = Image.new('RGB', (w, h), BG)
