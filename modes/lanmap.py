@@ -132,6 +132,10 @@ _VENDOR_TYPES = {
     'guangdong': ('Camera', RED),
     'china dragon': ('IoT', YELLOW),
     'shenzhen': ('IoT', YELLOW),
+    'liteon': ('PC', ACCENT),
+    'foxconn': ('PC', ACCENT),
+    'murata': ('IoT', YELLOW),
+    'wistron': ('PC', ACCENT),
     'tuya': ('IoT', YELLOW),
     'realtek': ('PC', ACCENT),
     'dell': ('PC', ACCENT),
@@ -159,7 +163,6 @@ _VENDOR_TYPES = {
     'philips': ('IoT', YELLOW),
     'lifx': ('IoT', YELLOW),
     'wemo': ('IoT', YELLOW),
-    'unknown': ('Device', TEXT_DIM),
 }
 
 # Open port → device type hints
@@ -363,10 +366,109 @@ def _parse_nmap_output(output):
     return hosts
 
 
+def _gather_local_intel():
+    """Gather ARP table and mDNS data for enrichment before nmap scan."""
+    intel = {}  # ip -> {'hostname': str, 'services': [], 'model': str}
+
+    # ARP table — gives us IPs we already know about
+    try:
+        result = subprocess.run(['arp', '-an'], capture_output=True, text=True, timeout=3)
+        for line in result.stdout.splitlines():
+            m = re.search(r'\((\d+\.\d+\.\d+\.\d+)\)', line)
+            if m:
+                ip = m.group(1)
+                if ip not in intel:
+                    intel[ip] = {'hostname': '', 'services': [], 'model': ''}
+    except Exception:
+        pass
+
+    # mDNS via avahi-browse — rich device info
+    try:
+        result = subprocess.run(
+            ['avahi-browse', '-atrl', '--no-db-lookup', '-p'],
+            capture_output=True, text=True, timeout=8
+        )
+        for line in result.stdout.splitlines():
+            if not line.startswith('='):
+                continue
+            parts = line.split(';')
+            if len(parts) < 9:
+                continue
+            # parts: =;iface;proto;name;service;domain;hostname;ip;port;txt...
+            service = parts[4]
+            mdns_host = parts[6].replace('.local', '')
+            ip = parts[7]
+            name = parts[3]
+            # Decode avahi octal escapes (\032 = space, \058 = colon, etc)
+            name = re.sub(r'\\(\d{3})', lambda m: chr(int(m.group(1), 8)), name)
+            txt = ';'.join(parts[9:]) if len(parts) > 9 else ''
+
+            if not re.match(r'\d+\.\d+\.\d+\.\d+', ip):
+                continue
+
+            if ip not in intel:
+                intel[ip] = {'hostname': '', 'services': [], 'model': ''}
+
+            # Better hostname from mDNS
+            if mdns_host and len(mdns_host) > len(intel[ip]['hostname']):
+                intel[ip]['hostname'] = mdns_host
+
+            # Track services
+            if service and service not in intel[ip]['services']:
+                intel[ip]['services'].append(service)
+
+            # Extract model from txt records
+            model_match = re.search(r'model=([^"]+)', txt)
+            if model_match and not intel[ip]['model']:
+                intel[ip]['model'] = model_match.group(1)
+
+            # Extract manufacturer
+            mfr_match = re.search(r'manufacturer=([^"]+)', txt)
+            if mfr_match:
+                intel[ip]['model'] = mfr_match.group(1) + ' ' + intel[ip].get('model', '')
+
+            # Friendly name from airplay/display service names
+            if service in ('_airplay._tcp', '_display._tcp', '_raop._tcp'):
+                if name and not intel[ip].get('friendly_name'):
+                    intel[ip]['friendly_name'] = name
+
+    except FileNotFoundError:
+        pass  # avahi-browse not installed
+    except Exception:
+        pass
+
+    return intel
+
+
+def _guess_from_services(services):
+    """Infer device type from mDNS service list."""
+    svc_set = set(services)
+    if '_airplay._tcp' in svc_set or '_raop._tcp' in svc_set:
+        if '_display._tcp' in svc_set:
+            return 'TV'
+        return 'AirPlay'
+    if '_hap._tcp' in svc_set:
+        return 'HomeKit'
+    if '_spotify-connect._tcp' in svc_set:
+        return 'Speaker'
+    if '_printer._tcp' in svc_set or '_ipp._tcp' in svc_set:
+        return 'Printer'
+    if '_smb._tcp' in svc_set or '_afpovertcp._tcp' in svc_set:
+        return 'NAS'
+    if '_ssh._tcp' in svc_set:
+        return 'SSH'
+    if '_remotepairing._tcp' in svc_set or '_apple-mobdev2._tcp' in svc_set:
+        return 'Apple'
+    return None
+
+
 def _do_scan():
-    """Background scan worker. Quick ping scan first, then port probe for identification."""
+    """Background scan: ARP+mDNS enrichment, nmap discovery, port probe."""
     subnet = _cache['subnet']
     try:
+        # Phase 0: gather local intel (ARP + mDNS) — instant, no network scan
+        local_intel = _gather_local_intel()
+
         # Phase 1: fast ping scan to discover hosts
         result = subprocess.run(
             ['nmap', '-sn', subnet, '--host-timeout', '3s'],
@@ -378,6 +480,43 @@ def _do_scan():
             return
 
         hosts = _parse_nmap_output(result.stdout)
+
+        # Enrich hosts with local intel
+        for host in hosts:
+            ip = host['ip']
+            if ip in local_intel:
+                info = local_intel[ip]
+                # Better hostname from mDNS
+                if info['hostname'] and (not host['hostname'] or
+                        len(info['hostname']) > len(host['hostname'])):
+                    host['hostname'] = info['hostname']
+                # Use friendly name if available (e.g., "65in TCL Roku TV")
+                if info.get('friendly_name'):
+                    # Clean avahi escapes
+                    fname = re.sub(r'\\(\d{3})', lambda m: chr(int(m.group(1), 8)),
+                                   info['friendly_name'])
+                    # Strip MAC prefix patterns like "F22522335B1D@"
+                    fname = re.sub(r'^[0-9A-Fa-f]{12}@', '', fname)
+                    if fname:
+                        host['hostname'] = fname
+                # Re-guess type with enriched hostname
+                if host['type'] == 'Device':
+                    new_type, new_color = _guess_device(host['hostname'], host['vendor'])
+                    if new_type != 'Device':
+                        host['type'] = new_type
+                        host['color'] = new_color
+
+                # Service-based type inference (overrides vendor guess for unknowns)
+                if info['services'] and host['type'] == 'Device':
+                    svc_type = _guess_from_services(info['services'])
+                    if svc_type:
+                        color_map = {
+                            'TV': ORANGE, 'HomeKit': YELLOW, 'AirPlay': TEXT_BRIGHT,
+                            'Speaker': CYAN, 'Printer': PURPLE, 'NAS': CYAN,
+                            'Apple': TEXT_BRIGHT, 'SSH': ACCENT,
+                        }
+                        host['type'] = svc_type
+                        host['color'] = color_map.get(svc_type, TEXT_DIM)
 
         # Phase 2: quick port probe on discovered hosts for better identification
         # Only probe key ports, with tight timeouts
