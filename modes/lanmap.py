@@ -518,6 +518,55 @@ def _do_scan():
                         host['type'] = svc_type
                         host['color'] = color_map.get(svc_type, TEXT_DIM)
 
+        # Phase 1.5: resolve hostnames for any hosts still showing "—"
+        # Try reverse DNS, avahi-resolve, and nmblookup
+        unnamed = [h for h in hosts if not h['hostname']]
+        for host in unnamed:
+            ip = host['ip']
+            name = ''
+            # Try reverse DNS first (fastest)
+            try:
+                result = subprocess.run(
+                    ['dig', '-x', ip, '+short', '+timeout=1', '+tries=1'],
+                    capture_output=True, text=True, timeout=3)
+                ans = result.stdout.strip().rstrip('.')
+                if ans and not re.match(r'^[\d-]+\.lan$', ans):
+                    name = ans.replace('.lan', '').replace('.local', '')
+            except Exception:
+                pass
+            # Try avahi-resolve
+            if not name:
+                try:
+                    result = subprocess.run(
+                        ['avahi-resolve', '-a', ip],
+                        capture_output=True, text=True, timeout=3)
+                    parts = result.stdout.strip().split('\t')
+                    if len(parts) >= 2 and parts[1]:
+                        name = parts[1].replace('.local', '')
+                except Exception:
+                    pass
+            # Try NetBIOS
+            if not name:
+                try:
+                    result = subprocess.run(
+                        ['nmblookup', '-A', ip],
+                        capture_output=True, text=True, timeout=3)
+                    for line in result.stdout.splitlines():
+                        line = line.strip()
+                        if '<00>' in line and 'GROUP' not in line:
+                            name = line.split()[0]
+                            break
+                except Exception:
+                    pass
+            if name:
+                host['hostname'] = name
+                # Re-evaluate type with new hostname
+                if host['type'] == 'Device':
+                    new_type, new_color = _guess_device(name, host['vendor'])
+                    if new_type != 'Device':
+                        host['type'] = new_type
+                        host['color'] = new_color
+
         # Phase 2: quick port probe on discovered hosts for better identification
         # Only probe key ports, with tight timeouts
         probe_ports = '22,53,80,443,445,548,554,631,3389,5000,5353,8080,8123,9100,32400,62078'
