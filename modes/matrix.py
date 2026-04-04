@@ -204,8 +204,8 @@ def render_frame(w=1920, h=440):
         col.advance()
         col.draw(draw, f)
 
-    # --- Dim the rain — visible atmosphere behind the logs ---
-    img = ImageEnhance.Brightness(img).enhance(0.65)
+    # --- Rain stays bright — it's the vibe ---
+    img = ImageEnhance.Brightness(img).enhance(0.85)
 
     # --- Phosphor bloom ---
     bloom = img.filter(ImageFilter.GaussianBlur(radius=4))
@@ -264,9 +264,9 @@ def render_frame(w=1920, h=440):
         # Truncate to fit width
         disp = line[:140] if len(line) > 140 else line
 
-        # Semi-transparent dark bar — lets rain bleed through
+        # Very transparent — rain bleeds through heavily
         draw.rectangle([0, y_pos - 2, w, y_pos + line_h - 4],
-                       fill=(0, 0, 0, 120))
+                       fill=(0, 0, 0, 80))
 
         # Cyberpunk color coding
         if any(kw in disp.lower() for kw in ['error', 'fail', 'crit', 'fatal']):
