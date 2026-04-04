@@ -10,20 +10,26 @@ These cheap USB-C bar monitors ship with Windows-only drivers and have **zero Li
 
 ## Screenshots
 
-**System Monitor** — CPU cores, temps, GPU, memory, network with sparkline graphs:
+**System Monitor** — CPU cores, temps, GPU, memory, disk, swap, network:
 ![sysmon](screenshots/sysmon.png)
 
-**Crypto Ticker** — live prices from CoinGecko with 24h change and sparklines:
+**Crypto Ticker** — live prices from CoinGecko with 24h change:
 ![ticker](screenshots/ticker.png)
-
-**Docker Monitor** — container status, CPU/memory bars, network I/O:
-![docker](screenshots/docker_mon.png)
 
 **Clock + Weather** — animated weather scenes, 12hr time, system stats:
 ![clock](screenshots/clock.png)
 
+**Docker Monitor** — container status, CPU/memory bars, network I/O:
+![docker](screenshots/docker_mon.png)
+
 **Network Monitor** — active connections, state breakdown, process names:
 ![netmon](screenshots/netmon.png)
+
+**Matrix Rain** — digital rain effect with live syslog data:
+![matrix](screenshots/matrix.png)
+
+**Pomodoro Timer** — 25/5 focus timer with circular progress:
+![pomodoro](screenshots/pomodoro.png)
 
 ## Supported Hardware
 
