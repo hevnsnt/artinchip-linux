@@ -227,27 +227,28 @@ def render_frame(w=1920, h=440):
         _last_syslog = _get_syslog_lines(15)
         _last_syslog_time = now
 
-    # Header bar with gradient fade
     header_h = 42
-    header = Image.new('RGBA', (w, header_h), (0, 0, 0, 0))
-    hd = ImageDraw.Draw(header)
-    for y_off in range(header_h):
-        alpha = int(220 * (1.0 - y_off / header_h) ** 0.5)
-        hd.line([(0, y_off), (w, y_off)], fill=(0, 0, 0, alpha))
-    img_rgba.paste(header, (0, 0), header)
     draw = ImageDraw.Draw(img_rgba)
 
-    # Hostname / time / IP in header
+    # Hostname / time / IP — with drop shadow for readability over rain
     bold_font = font(26)
-    draw.text((16, 8), _hostname, fill=MATRIX_HEAD, font=bold_font)
+    def _shadow_text(draw, x, y, text, color, f):
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                if dx or dy:
+                    draw.text((x + dx, y + dy), text, fill=(0, 0, 0, 255), font=f)
+        draw.text((x + 1, y + 1), text, fill=(0, 0, 0, 255), font=f)
+        draw.text((x, y), text, fill=color, font=f)
+
+    _shadow_text(draw, 16, 8, _hostname, MATRIX_HEAD, bold_font)
     time_str = datetime.now().strftime('%H:%M:%S')
     time_bbox = draw.textbbox((0, 0), time_str, font=bold_font)
     time_w = time_bbox[2] - time_bbox[0]
-    draw.text(((w - time_w) // 2, 8), time_str, fill=MATRIX_HEAD, font=bold_font)
+    _shadow_text(draw, (w - time_w) // 2, 8, time_str, MATRIX_HEAD, bold_font)
     ip_font = font(20)
     ip_bbox = draw.textbbox((0, 0), _ip_address, font=ip_font)
     ip_w = ip_bbox[2] - ip_bbox[0]
-    draw.text((w - ip_w - 16, 12), _ip_address, fill=MATRIX_BRIGHT, font=ip_font)
+    _shadow_text(draw, w - ip_w - 16, 12, _ip_address, MATRIX_BRIGHT, ip_font)
 
     # Log lines — large, filling most of the screen
     log_font = font(20)
@@ -261,9 +262,7 @@ def render_frame(w=1920, h=440):
         # Truncate to fit width
         disp = line[:140] if len(line) > 140 else line
 
-        # Very transparent — rain bleeds through heavily
-        draw.rectangle([0, y_pos - 2, w, y_pos + line_h - 4],
-                       fill=(0, 0, 0, 80))
+        # No background bar — text sits directly on the rain
 
         # Cyberpunk color coding
         if any(kw in disp.lower() for kw in ['error', 'fail', 'crit', 'fatal']):
@@ -277,7 +276,7 @@ def render_frame(w=1920, h=440):
         else:
             text_color = (0, 230, 255, 255)   # cyan
 
-        draw.text((16, y_pos), disp, fill=text_color, font=log_font)
+        _shadow_text(draw, 16, y_pos, disp, text_color, log_font)
 
     # --- Scanline overlay ---
     img_rgba = Image.alpha_composite(img_rgba, _get_scanlines(w, h))
