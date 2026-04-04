@@ -204,12 +204,12 @@ def render_frame(w=1920, h=440):
         col.advance()
         col.draw(draw, f)
 
-    # --- Dim the rain — it's background atmosphere, not the focus ---
-    img = ImageEnhance.Brightness(img).enhance(0.4)
+    # --- Dim the rain — visible atmosphere behind the logs ---
+    img = ImageEnhance.Brightness(img).enhance(0.65)
 
-    # --- Phosphor bloom (subtle, atmospheric) ---
-    bloom = img.filter(ImageFilter.GaussianBlur(radius=5))
-    bloom = ImageEnhance.Brightness(bloom).enhance(0.3)
+    # --- Phosphor bloom ---
+    bloom = img.filter(ImageFilter.GaussianBlur(radius=4))
+    bloom = ImageEnhance.Brightness(bloom).enhance(0.45)
     img = ImageChops.add(img, bloom)
 
     # --- Bottom reflection (subtle) ---
@@ -264,18 +264,21 @@ def render_frame(w=1920, h=440):
         # Truncate to fit width
         disp = line[:140] if len(line) > 140 else line
 
-        # Semi-transparent dark bar behind each line
+        # Semi-transparent dark bar — lets rain bleed through
         draw.rectangle([0, y_pos - 2, w, y_pos + line_h - 4],
-                       fill=(0, 0, 0, 160))
+                       fill=(0, 0, 0, 120))
 
-        # Colorize: timestamps in dim, rest in bright green
-        # Highlight errors/warnings
-        if any(kw in disp.lower() for kw in ['error', 'fail', 'crit']):
-            text_color = (255, 80, 80, 255)  # red
-        elif any(kw in disp.lower() for kw in ['warn', 'timeout']):
-            text_color = (255, 220, 0, 255)  # yellow
+        # Cyberpunk color coding
+        if any(kw in disp.lower() for kw in ['error', 'fail', 'crit', 'fatal']):
+            text_color = (255, 40, 80, 255)   # hot pink / neon red
+        elif any(kw in disp.lower() for kw in ['warn', 'timeout', 'denied']):
+            text_color = (255, 180, 0, 255)   # amber
+        elif any(kw in disp.lower() for kw in ['start', 'up', 'connect', 'success', 'ok']):
+            text_color = (0, 255, 180, 255)   # neon teal
+        elif any(kw in disp.lower() for kw in ['session', 'auth', 'login', 'ssh']):
+            text_color = (200, 80, 255, 255)  # neon purple
         else:
-            text_color = MATRIX_BRIGHT + (255,)
+            text_color = (0, 230, 255, 255)   # cyan
 
         draw.text((16, y_pos), disp, fill=text_color, font=log_font)
 
