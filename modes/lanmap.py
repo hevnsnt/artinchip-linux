@@ -166,6 +166,18 @@ _cache = {
 SCAN_INTERVAL = 30   # seconds between scans
 NEW_HIGHLIGHT_SEC = 10  # how long new devices stay highlighted
 PAGE_ROTATE_SEC = 15  # seconds per page when paginating
+GROUP_BY_TYPE = False  # set True to group hosts by device type
+
+# Group ordering (lower = shown first)
+_TYPE_ORDER = {
+    'Router': 0, 'PC': 1, 'Mac': 1, 'GPU/PC': 1,
+    'Device': 2,
+    'Google': 3, 'Nest': 3,
+    'IoT': 4, 'Wyze': 4, 'TP-Link': 4,
+    'Speaker': 5, 'Echo': 5, 'Sonos': 5,
+    'Camera': 6, 'Ring': 6,
+    'Pi': 7, 'Phone': 7, 'Apple': 7, 'Samsung': 7, 'Roku': 7,
+}
 
 
 def _detect_subnet():
@@ -311,18 +323,23 @@ def render_frame(w=1920, h=440):
     pad_x = 20
     new_ips = _cache['new_ips']
 
-    # Sort: new devices first (by time seen), then rest by IP
-    hosts_sorted = []
-    rest = []
+    # Sort: new devices first, then grouped by type or by IP
+    hosts_new = []
+    hosts_rest = []
     for entry in _cache['hosts']:
         if entry['ip'] in new_ips:
-            hosts_sorted.append(entry)
+            hosts_new.append(entry)
         else:
-            rest.append(entry)
-    # New ones sorted newest first
-    hosts_sorted.sort(key=lambda e: -new_ips.get(e['ip'], 0))
-    hosts_sorted.extend(rest)
-    hosts = hosts_sorted
+            hosts_rest.append(entry)
+    hosts_new.sort(key=lambda e: -new_ips.get(e['ip'], 0))
+
+    if GROUP_BY_TYPE:
+        hosts_rest.sort(key=lambda e: (
+            _TYPE_ORDER.get(e['type'], 99),
+            tuple(int(o) for o in e['ip'].split('.'))
+        ))
+
+    hosts = hosts_new + hosts_rest
 
     # ── Header ──
     header_h = 44

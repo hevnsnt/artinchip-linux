@@ -1064,11 +1064,14 @@ def _mode_fps(name):
         'pomodoro':   1,     # 1fps  — countdown seconds
     }.get(name, 1.0)
 
-def mode_single(disp, name, quality):
+def mode_single(disp, name, quality, extra_args=None):
     """Run a single display mode in a loop."""
     mod = _load_mode(name)
     if not mod:
         return
+    # Pass extra config to mode modules
+    if extra_args and hasattr(mod, 'GROUP_BY_TYPE') and extra_args.get('group'):
+        mod.GROUP_BY_TYPE = True
     _init_mode(mod)
     interval = _mode_fps(name)
     rw, rh = disp.render_w, disp.render_h
@@ -1213,6 +1216,8 @@ def main():
     group.add_argument('--docker', action='store_true', help='Docker container monitor')
     group.add_argument('--netmon', action='store_true', help='Network connections monitor')
     group.add_argument('--lanmap', action='store_true', help='Network device scanner (nmap)')
+    parser.add_argument('--group', action='store_true',
+                        help='Group lanmap results by device type')
     group.add_argument('--news', action='store_true', help='RSS news crawl')
     group.add_argument('--pomodoro', action='store_true', help='Pomodoro focus timer')
     group.add_argument('--show', nargs='+', metavar='MODE',
@@ -1394,7 +1399,8 @@ def main():
         elif mode == 'test':
             mode_test(disp, quality)
         elif mode in ALL_MODES:
-            mode_single(disp, mode, quality)
+            mode_single(disp, mode, quality,
+                        extra_args={'group': getattr(args, 'group', False)})
     except KeyboardInterrupt:
         log("Interrupted.")
     except Exception as e:
