@@ -7,20 +7,24 @@ Designed for 1920x440 stretched bar LCDs.
 """
 
 import time
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-# ── Colors ──────────────────────────────────────────────────────────
-BG         = (10, 12, 18)
-PANEL_BG   = (18, 22, 32)
-BORDER     = (35, 42, 58)
-ACCENT     = (0, 170, 255)
-TEXT       = (200, 210, 225)
-TEXT_DIM   = (100, 110, 130)
-GREEN      = (0, 220, 100)
-RED        = (255, 60, 60)
-YELLOW     = (255, 200, 0)
-ORANGE     = (255, 140, 0)
-CYAN       = (0, 220, 220)
+# ── Colors (vivid, saturated — matching sysmon dashboard) ──────────
+BG          = (5, 7, 12)
+PANEL_BG    = (10, 14, 24)
+ACCENT      = (0, 210, 255)
+TEXT        = (220, 225, 240)
+TEXT_DIM    = (65, 75, 100)
+TEXT_BRIGHT = (252, 254, 255)
+GREEN       = (0, 255, 140)
+RED         = (255, 50, 50)
+YELLOW      = (255, 225, 0)
+
+# ── Utility ────────────────────────────────────────────────────────
+def _lerp_color(c1, c2, t):
+    """Linearly interpolate between two RGB tuples."""
+    t = max(0.0, min(1.0, t))
+    return tuple(int(a + (b - a) * t) for a, b in zip(c1, c2))
 
 # ── Font cache ──────────────────────────────────────────────────────
 _fonts = {}
@@ -38,6 +42,62 @@ def font(size):
                 continue
         _fonts[size] = ImageFont.load_default()
     return _fonts[size]
+
+# ── Cached background and scanlines ────────────────────────────────
+_bg_cache = {}
+
+def _get_bg(w, h):
+    """Generate gradient background with grid, horizon glow, and vignette. Cached."""
+    if (w, h) not in _bg_cache:
+        img = Image.new('RGBA', (w, h), BG + (255,))
+        draw = ImageDraw.Draw(img)
+        # Vertical gradient
+        for y in range(h):
+            t = y / max(h - 1, 1)
+            c = _lerp_color((8, 12, 22), (4, 6, 12), t)
+            draw.line([(0, y), (w, y)], fill=c)
+        # Grid
+        grid_c = (18, 24, 38, 50)
+        for gx in range(0, w, 40):
+            draw.line([(gx, 0), (gx, h)], fill=grid_c)
+        for gy in range(0, h, 40):
+            draw.line([(0, gy), (w, gy)], fill=grid_c)
+        # Grid dots at intersections
+        for gx in range(0, w, 80):
+            for gy in range(0, h, 80):
+                draw.ellipse([gx - 2, gy - 2, gx + 2, gy + 2], fill=ACCENT + (25,))
+                draw.ellipse([gx - 1, gy - 1, gx + 1, gy + 1], fill=ACCENT + (45,))
+        # Bottom horizon glow
+        for i in range(50):
+            a = int(30 * (1.0 - i / 50))
+            draw.line([(0, h - 1 - i), (w, h - 1 - i)], fill=(0, 100, 180, a))
+        # Vignette
+        vig = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+        vd = ImageDraw.Draw(vig)
+        for i in range(40):
+            a = int(50 * (1.0 - i / 40))
+            vd.line([(0, i), (w, i)], fill=(0, 0, 0, a))
+            vd.line([(0, h - 1 - i), (w, h - 1 - i)], fill=(0, 0, 0, a))
+        for i in range(60):
+            a = int(40 * (1.0 - i / 60))
+            vd.line([(i, 0), (i, h)], fill=(0, 0, 0, a))
+            vd.line([(w - 1 - i, 0), (w - 1 - i, h)], fill=(0, 0, 0, a))
+        img = Image.alpha_composite(img, vig)
+        _bg_cache[(w, h)] = img
+    return _bg_cache[(w, h)].copy()
+
+_scanline_cache = {}
+
+def _get_scanlines(w, h):
+    """Semi-transparent horizontal scanlines for HUD effect. Cached."""
+    key = (w, h)
+    if key not in _scanline_cache:
+        sl = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+        sd = ImageDraw.Draw(sl)
+        for y in range(0, h, 3):
+            sd.line([(0, y), (w, y)], fill=(0, 0, 0, 55))
+        _scanline_cache[key] = sl
+    return _scanline_cache[key]
 
 # ── Coin configuration ──────────────────────────────────────────────
 COINS = [
@@ -111,13 +171,13 @@ def _fetch_prices():
         _last_fetch = time.monotonic()
 
 # ── Drawing helpers ─────────────────────────────────────────────────
-def _draw_sparkline(draw, x, y, w, h, data, color):
-    """Draw a mini sparkline graph."""
+def _draw_sparkline(draw, img, x, y, w, h, data, color):
+    """Draw a sparkline with gradient fill and glow effect (sysmon style)."""
     if not data or len(data) < 2:
-        # Draw empty placeholder
-        draw.rectangle([x, y, x + w, y + h], fill=(12, 14, 22), outline=BORDER)
+        # Empty placeholder
+        draw.rectangle([x, y, x + w, y + h], fill=(10, 13, 20))
         return
-    draw.rectangle([x, y, x + w, y + h], fill=(12, 14, 22))
+    draw.rectangle([x, y, x + w, y + h], fill=(10, 13, 20))
     mn = min(data)
     mx = max(data)
     spread = mx - mn if mx != mn else 1.0
@@ -127,12 +187,33 @@ def _draw_sparkline(draw, x, y, w, h, data, color):
         py = y + h - int((val - mn) * h / spread)
         py = max(y, min(y + h, py))
         points.append((px, py))
-    # Fill under the line
+
+    # Gradient fill under line
+    dim_fill = tuple(max(0, c - 160) for c in color)
     fill_points = points + [(x + w, y + h), (x, y + h)]
-    fill_color = tuple(max(0, c - 180) for c in color)
-    draw.polygon(fill_points, fill=fill_color)
-    # Draw the line
-    draw.line(points, fill=color, width=2)
+    draw.polygon(fill_points, fill=dim_fill)
+    # Brighter band near the line
+    brighter = tuple(max(0, c - 120) for c in color)
+    band_h = max(1, h // 5)
+    top_fill = []
+    for px, py in points:
+        top_fill.append((px, py))
+    for px, py in reversed(points):
+        top_fill.append((px, min(py + band_h, y + h)))
+    draw.polygon(top_fill, fill=brighter)
+
+    # Glow layer on the line (cropped region, not full-screen)
+    pad = 8
+    gw, gh = w + pad * 2, h + pad * 2
+    glow = Image.new('RGBA', (gw, gh), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    shifted = [(px - x + pad, py - y + pad) for px, py in points]
+    gd.line(shifted, fill=color + (140,), width=5)
+    glow = glow.filter(ImageFilter.GaussianBlur(radius=6))
+    img.paste(glow, (x - pad, y - pad), glow)
+
+    # Sharp bright line on top
+    draw.line(points, fill=tuple(min(255, c + 40) for c in color), width=2)
 
 def _format_price(price):
     """Format price for display."""
@@ -147,27 +228,67 @@ def _format_price(price):
     else:
         return f"${price:.6f}"
 
-def _draw_coin_card(draw, x, y, w, h, coin_id, symbol):
-    """Draw a single coin card at position (x, y). Returns card width used."""
-    pad = 12
+def _draw_hero_text(draw, img, x, y, text, color, size):
+    """Draw large text with a subtle glow behind it."""
+    f = font(size)
+    bbox = f.getbbox(text)
+    tw = bbox[2] - bbox[0] + 20
+    th = bbox[3] - bbox[1] + 20
+    pad = 8
+    glow = Image.new('RGBA', (tw + pad * 2, th + pad * 2), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    gd.text((pad - bbox[0], pad - bbox[1]), text, fill=color + (90,), font=f)
+    glow = glow.filter(ImageFilter.GaussianBlur(radius=5))
+    img.paste(glow, (x - pad, y - pad), glow)
+    draw.text((x, y), text, fill=color, font=f)
+
+def _draw_coin_card(draw, img, x, y, w, h, coin_id, symbol):
+    """Draw a single coin card with gradient panel, glowing accents, and sparkline."""
+    pad = 14
     info = _prices.get(coin_id, {})
     price = info.get('usd', 0)
     change = info.get('usd_24h_change', 0)
     history = _price_history.get(coin_id, [])
 
-    # Card background
-    draw.rectangle([x, y, x + w, y + h], fill=PANEL_BG, outline=BORDER)
-    # Top accent
-    draw.rectangle([x, y, x + w, y + 2], fill=ACCENT)
+    # Performance color
+    if change and change >= 0:
+        perf_color = GREEN
+    elif change:
+        perf_color = RED
+    else:
+        perf_color = ACCENT
 
-    # Symbol (large, top-left)
+    # ── Card background: vertical gradient ──
+    top_c = (14, 18, 30)
+    bot_c = (8, 11, 20)
+    for row in range(h):
+        t = row / max(h - 1, 1)
+        c = _lerp_color(top_c, bot_c, t)
+        draw.line([(x, y + row), (x + w, y + row)], fill=c)
+
+    # ── Glowing top accent line (colored by performance) ──
+    glow_w = w
+    glow_h = 18
+    glow = Image.new('RGBA', (glow_w, glow_h), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    gd.rectangle([0, 0, glow_w, 2], fill=perf_color + (220,))
+    gd.rectangle([0, 2, glow_w, 6], fill=perf_color + (50,))
+    glow = glow.filter(ImageFilter.GaussianBlur(radius=4))
+    img.paste(glow, (x, y - 2), glow)
+
+    # ── Glowing left edge ──
+    side_h = h
+    side_w = 10
+    side = Image.new('RGBA', (side_w, side_h), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(side)
+    sd.line([(side_w // 2, 0), (side_w // 2, side_h)], fill=perf_color + (30,))
+    side = side.filter(ImageFilter.GaussianBlur(radius=3))
+    img.paste(side, (x - side_w // 2, y), side)
+
+    # ── Symbol (bold, top-left) ──
     draw.text((x + pad, y + 10), symbol, fill=ACCENT, font=font(38))
 
-    # Price (large, right of symbol)
-    price_str = _format_price(price) if price else "---"
-    draw.text((x + pad, y + 58), price_str, fill=TEXT, font=font(52))
-
-    # 24h change
+    # ── 24h change badge (top-right area) ──
     if change:
         chg_color = GREEN if change >= 0 else RED
         arrow = "+" if change >= 0 else ""
@@ -176,17 +297,34 @@ def _draw_coin_card(draw, x, y, w, h, coin_id, symbol):
         chg_color = TEXT_DIM
         chg_str = "---"
     draw.text((x + pad + 110, y + 16), "24h", fill=TEXT_DIM, font=font(16))
-    draw.text((x + pad + 145, y + 12), chg_str, fill=chg_color, font=font(24))
+    # Change badge with background pill
+    badge_f = font(22)
+    badge_bbox = badge_f.getbbox(chg_str)
+    badge_w = badge_bbox[2] - badge_bbox[0] + 14
+    badge_h = badge_bbox[3] - badge_bbox[1] + 8
+    badge_x = x + pad + 148
+    badge_y = y + 12
+    # Pill background
+    pill_color = chg_color + (35,) if change else TEXT_DIM + (20,)
+    draw.rounded_rectangle(
+        [badge_x - 4, badge_y - 2, badge_x + badge_w, badge_y + badge_h],
+        radius=4, fill=pill_color
+    )
+    draw.text((badge_x + 3, badge_y + 1), chg_str, fill=chg_color, font=badge_f)
 
-    # Sparkline — bottom portion of card
+    # ── Hero price with glow ──
+    price_str = _format_price(price) if price else "---"
+    _draw_hero_text(draw, img, x + pad, y + 56, price_str, TEXT_BRIGHT, 48)
+
+    # ── Sparkline — bottom portion of card ──
     spark_y = y + 125
-    spark_h = h - 145
+    spark_h = h - 150
     spark_w = w - pad * 2
     if spark_h > 20:
-        spark_color = GREEN if change and change >= 0 else RED if change else TEXT_DIM
-        _draw_sparkline(draw, x + pad, spark_y, spark_w, spark_h, history, spark_color)
+        _draw_sparkline(draw, img, x + pad, spark_y, spark_w, spark_h,
+                        history, perf_color)
 
-    # 24h label under sparkline
+    # ── Fetch count label under sparkline ──
     if spark_h > 20 and history:
         draw.text((x + pad, spark_y + spark_h + 4),
                   f"Last {len(history)} fetches", fill=TEXT_DIM, font=font(12))
@@ -212,19 +350,24 @@ def render_frame(w=1920, h=440):
     scroll_speed = 120  # pixels per second
     _scroll_offset += scroll_speed * dt
 
-    img = Image.new('RGB', (w, h), BG)
+    # RGBA workflow — start with cached gradient background
+    img = _get_bg(w, h)
     draw = ImageDraw.Draw(img)
 
     # Show error banner if needed
     if _fetch_error and not _prices:
-        # Full-screen error
-        draw.rectangle([0, 0, w, h], fill=BG)
-        draw.text((40, 40), "CRYPTO TICKER", fill=ACCENT, font=font(32))
+        _draw_hero_text(draw, img, 40, 40, "CRYPTO TICKER", ACCENT, 32)
         draw.text((40, 90), f"Error: {_fetch_error}", fill=RED, font=font(24))
         draw.text((40, 130), "Retrying every 60 seconds...", fill=TEXT_DIM, font=font(18))
-        # Bottom accent
-        draw.rectangle([0, h - 2, w, h], fill=(0, 80, 140))
-        return img
+        # Bottom glow line
+        for i in range(8):
+            a = int(180 * (1.0 - i / 8))
+            draw.line([(0, h - 1 - i), (w, h - 1 - i)], fill=ACCENT + (a,))
+        # Scanlines + convert
+        img = Image.alpha_composite(img, _get_scanlines(w, h))
+        out = Image.new('RGB', (w, h), BG)
+        out.paste(img, (0, 0), img)
+        return out
 
     # Card dimensions
     card_w = 320
@@ -237,19 +380,7 @@ def render_frame(w=1920, h=440):
     # Calculate scroll position (wraps around)
     scroll_pos = _scroll_offset % total_strip_w
 
-    # Draw header bar with status info
-    # Top-left: title
-    draw.text((10, h - 22), "CRYPTO TICKER", fill=TEXT_DIM, font=font(13))
-    # Top-right: last update time
-    if _last_fetch > 0:
-        ago = int(now - _last_fetch)
-        draw.text((w - 200, h - 22), f"Updated {ago}s ago", fill=TEXT_DIM, font=font(13))
-    if _fetch_error:
-        draw.text((w // 2 - 100, h - 22), f"API: {_fetch_error[:40]}",
-                  fill=YELLOW, font=font(13))
-
     # Draw coins in scrolling strip
-    # We draw enough copies to fill the screen plus overflow
     for copy in range(-1, (w // total_strip_w) + 3):
         base_x = copy * total_strip_w - scroll_pos
         for i, (coin_id, symbol) in enumerate(COINS):
@@ -257,12 +388,29 @@ def render_frame(w=1920, h=440):
             # Only draw if card is visible (with margin)
             if cx + card_w < -card_w or cx > w + card_w:
                 continue
-            _draw_coin_card(draw, int(cx), card_y, card_w, card_h, coin_id, symbol)
+            _draw_coin_card(draw, img, int(cx), card_y, card_w, card_h,
+                            coin_id, symbol)
 
-    # Bottom accent line
-    draw.rectangle([0, h - 2, w, h], fill=(0, 80, 140))
+    # ── Bottom status bar ──
+    # Status text
+    draw.text((10, h - 22), "CRYPTO TICKER", fill=TEXT_DIM, font=font(13))
+    if _last_fetch > 0:
+        ago = int(now - _last_fetch)
+        draw.text((w - 200, h - 22), f"Updated {ago}s ago", fill=TEXT_DIM, font=font(13))
+    if _fetch_error:
+        draw.text((w // 2 - 100, h - 22), f"API: {_fetch_error[:40]}",
+                  fill=YELLOW, font=font(13))
 
-    return img
+    # Glowing bottom accent line
+    for i in range(8):
+        a = int(180 * (1.0 - i / 8))
+        draw.line([(0, h - 1 - i), (w, h - 1 - i)], fill=ACCENT + (a,))
+
+    # Apply scanlines and convert RGBA -> RGB
+    img = Image.alpha_composite(img, _get_scanlines(w, h))
+    out = Image.new('RGB', (w, h), BG)
+    out.paste(img, (0, 0), img)
+    return out
 
 
 # ── Standalone mode ─────────────────────────────────────────────────
