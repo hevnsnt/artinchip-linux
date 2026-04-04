@@ -170,13 +170,16 @@ GROUP_BY_TYPE = False  # set True to group hosts by device type
 
 # Group ordering (lower = shown first)
 _TYPE_ORDER = {
-    'Router': 0, 'PC': 1, 'Mac': 1, 'GPU/PC': 1,
-    'Device': 2,
-    'Google': 3, 'Nest': 3,
-    'IoT': 4, 'Wyze': 4, 'TP-Link': 4,
-    'Speaker': 5, 'Echo': 5, 'Sonos': 5,
-    'Camera': 6, 'Ring': 6,
-    'Pi': 7, 'Phone': 7, 'Apple': 7, 'Samsung': 7, 'Roku': 7,
+    'Router': 0,
+    'Apple': 1, 'Mac': 1, 'Phone': 1,
+    'PC': 2, 'GPU/PC': 2,
+    'Pi': 3,
+    'Device': 4, 'Samsung': 4,
+    'Google': 5, 'Nest': 5,
+    'Roku': 6,
+    'IoT': 7, 'Wyze': 7, 'TP-Link': 7, 'Espressif': 7,
+    'Speaker': 8, 'Echo': 8, 'Sonos': 8,
+    'Camera': 9, 'Ring': 9,
 }
 
 
