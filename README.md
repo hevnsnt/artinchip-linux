@@ -1,8 +1,8 @@
-# tinyscreen — Linux Driver for ArtInChip USB Bar Monitors
+# tinyscreen — Linux Display Engine for ArtInChip USB Bar Monitors
 
-**Open-source Linux display driver for ArtInChip (33c3:0e02) USB bar monitors**, including the popular ZHAOCAILIN 11.3" 1920x440 stretched LCD displays sold on AliExpress.
+**Turn cheap ArtInChip (33c3:0e02) USB-C bar displays into dashboard screens, virtual monitors, or media players on Linux.** Built for the popular ZHAOCAILIN 11.3" 1920x440 stretched LCDs sold on AliExpress.
 
-These cheap USB-C bar monitors ship with Windows-only drivers and have **zero Linux support** — until now.
+10+ built-in dashboards, EVDI virtual display support, low-CPU website rendering, and video playback. These monitors ship with Windows-only drivers and have **zero Linux support** — until now.
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Python](https://img.shields.io/badge/python-3.10+-green)

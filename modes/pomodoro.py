@@ -10,20 +10,20 @@ Designed for 1920x440 stretched bar LCDs.
 
 import time
 import math
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-# ── Colors ──────────────────────────────────────────────────────────
-BG         = (10, 12, 18)
-PANEL_BG   = (18, 22, 32)
-BORDER     = (35, 42, 58)
-ACCENT     = (0, 170, 255)
-TEXT       = (200, 210, 225)
-TEXT_DIM   = (100, 110, 130)
-GREEN      = (0, 220, 100)
-RED        = (255, 60, 60)
-YELLOW     = (255, 200, 0)
-ORANGE     = (255, 140, 0)
-CYAN       = (0, 220, 220)
+# ── Colors (vivid, saturated — matching sysmon dashboard) ──────────
+BG          = (5, 7, 12)
+PANEL_BG    = (10, 14, 24)
+ACCENT      = (0, 210, 255)
+TEXT        = (220, 225, 240)
+TEXT_DIM    = (65, 75, 100)
+TEXT_BRIGHT = (252, 254, 255)
+GREEN       = (0, 255, 140)
+RED         = (255, 50, 50)
+YELLOW      = (255, 225, 0)
+ORANGE      = (255, 165, 30)
+CYAN        = (0, 240, 255)
 
 # ── Font cache ──────────────────────────────────────────────────────
 _fonts = {}
@@ -100,54 +100,246 @@ def _progress_color(pct_remaining):
     else:
         return RED
 
-def _draw_bar(draw, x, y, w, h, pct, color, bg=PANEL_BG):
-    """Draw a horizontal progress bar with gradient effect."""
-    draw.rectangle([x, y, x + w, y + h], fill=bg, outline=BORDER)
-    fill_w = max(0, int(w * min(pct, 100) / 100))
-    if fill_w > 0:
-        dim = tuple(max(0, c - 60) for c in color)
-        draw.rectangle([x + 1, y + 1, x + fill_w, y + h - 1], fill=dim)
-        # Bright tip
-        tip_w = min(4, fill_w)
-        draw.rectangle([x + fill_w - tip_w, y + 1, x + fill_w, y + h - 1], fill=color)
 
-def _draw_session_dots(draw, x, y, count, current_session, dot_size=14, gap=8):
-    """Draw session indicator dots. Filled for completed, outlined for pending."""
-    total_dots = max(count + 1, LONG_BREAK_EVERY)  # show at least one cycle
+# ── Utility ─────────────────────────────────────────────────────────
+def _lerp_color(c1, c2, t):
+    """Linearly interpolate between two RGB tuples."""
+    t = max(0.0, min(1.0, t))
+    return tuple(int(a + (b - a) * t) for a, b in zip(c1, c2))
+
+
+# ── Cached background and scanlines ────────────────────────────────
+_bg_cache = {}
+
+def _get_bg(w, h):
+    """Generate gradient background with grid, horizon glow, and vignette. Cached."""
+    if (w, h) not in _bg_cache:
+        img = Image.new('RGBA', (w, h), BG + (255,))
+        draw = ImageDraw.Draw(img)
+        # Vertical gradient
+        for y in range(h):
+            t = y / max(h - 1, 1)
+            c = _lerp_color((8, 12, 22), (4, 6, 12), t)
+            draw.line([(0, y), (w, y)], fill=c)
+        # Grid
+        grid_c = (18, 24, 38, 50)
+        for gx in range(0, w, 40):
+            draw.line([(gx, 0), (gx, h)], fill=grid_c)
+        for gy in range(0, h, 40):
+            draw.line([(0, gy), (w, gy)], fill=grid_c)
+        # Grid dots at intersections
+        for gx in range(0, w, 80):
+            for gy in range(0, h, 80):
+                draw.ellipse([gx - 2, gy - 2, gx + 2, gy + 2], fill=ACCENT + (25,))
+                draw.ellipse([gx - 1, gy - 1, gx + 1, gy + 1], fill=ACCENT + (45,))
+        # Bottom horizon glow
+        for i in range(50):
+            a = int(30 * (1.0 - i / 50))
+            draw.line([(0, h - 1 - i), (w, h - 1 - i)], fill=(0, 100, 180, a))
+        # Vignette
+        vig = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+        vd = ImageDraw.Draw(vig)
+        for i in range(40):
+            a = int(50 * (1.0 - i / 40))
+            vd.line([(0, i), (w, i)], fill=(0, 0, 0, a))
+            vd.line([(0, h - 1 - i), (w, h - 1 - i)], fill=(0, 0, 0, a))
+        for i in range(60):
+            a = int(40 * (1.0 - i / 60))
+            vd.line([(i, 0), (i, h)], fill=(0, 0, 0, a))
+            vd.line([(w - 1 - i, 0), (w - 1 - i, h)], fill=(0, 0, 0, a))
+        img = Image.alpha_composite(img, vig)
+        _bg_cache[(w, h)] = img
+    return _bg_cache[(w, h)].copy()
+
+
+_scanline_cache = {}
+
+def _get_scanlines(w, h):
+    """Semi-transparent horizontal scanlines for HUD effect. Cached."""
+    key = (w, h)
+    if key not in _scanline_cache:
+        sl = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+        sd = ImageDraw.Draw(sl)
+        for y in range(0, h, 3):
+            sd.line([(0, y), (w, y)], fill=(0, 0, 0, 55))
+        _scanline_cache[key] = sl
+    return _scanline_cache[key]
+
+
+# ── Panel drawing ──────────────────────────────────────────────────
+def _draw_panel(draw, img, x, y, w, h, accent_color=ACCENT):
+    """Draw a panel with gradient fill, glowing accent top line, and side edges."""
+    # Panel body: vertical gradient
+    top_c = (14, 18, 30)
+    bot_c = (8, 11, 20)
+    for row in range(h):
+        t = row / max(h - 1, 1)
+        c = _lerp_color(top_c, bot_c, t)
+        draw.line([(x, y + row), (x + w, y + row)], fill=c)
+
+    # Glowing top accent line
+    glow_w = w
+    glow_h = 20
+    glow = Image.new('RGBA', (glow_w, glow_h), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    gd.rectangle([0, 0, glow_w, 2], fill=accent_color + (220,))
+    gd.rectangle([0, 2, glow_w, 6], fill=accent_color + (60,))
+    glow = glow.filter(ImageFilter.GaussianBlur(radius=5))
+    img.paste(glow, (x, y - 2), glow)
+
+    # Subtle glowing side edges
+    side_h = h
+    side_w = 12
+    for side_x in [x, x + w - 1]:
+        side = Image.new('RGBA', (side_w, side_h), (0, 0, 0, 0))
+        sd = ImageDraw.Draw(side)
+        sd.line([(side_w // 2, 0), (side_w // 2, side_h)], fill=accent_color + (30,))
+        side = side.filter(ImageFilter.GaussianBlur(radius=3))
+        img.paste(side, (side_x - side_w // 2, y), side)
+
+
+# ── Glow bar ───────────────────────────────────────────────────────
+def _draw_bar(draw, img, x, y, w, h, pct, color):
+    """Draw a horizontal progress bar with glow halo and gradient fill."""
+    draw.rectangle([x, y, x + w, y + h], fill=(12, 15, 22))
+
+    fill_w = max(0, int(w * min(pct, 100.0) / 100.0))
+    if fill_w <= 0:
+        return
+
+    # Glow halo on small cropped region
+    pad = 10
+    gw, gh = fill_w + pad * 2, h + pad * 2
+    if gw < 1 or gh < 1:
+        return
+    glow = Image.new('RGBA', (gw, gh), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    gd.rectangle([pad, pad, pad + fill_w, pad + h], fill=color + (100,))
+    glow = glow.filter(ImageFilter.GaussianBlur(radius=8))
+    img.paste(glow, (x - pad, y - pad), glow)
+
+    # Gradient fill: dim left -> bright right
+    for col in range(fill_w):
+        t = col / max(fill_w - 1, 1)
+        c = _lerp_color(tuple(max(0, v - 80) for v in color), color, t * 0.8 + 0.2)
+        draw.line([(x + 1 + col, y + 1), (x + 1 + col, y + h - 1)], fill=c)
+
+    # Bright leading edge
+    tip_w = min(4, fill_w)
+    bright = tuple(min(255, c + 60) for c in color)
+    draw.rectangle([x + fill_w - tip_w, y, x + fill_w, y + h], fill=bright)
+
+    # Top highlight
+    hl = tuple(min(255, c + 100) for c in color)
+    draw.line([(x + 1, y + 1), (x + fill_w - 1, y + 1)], fill=hl)
+
+
+# ── Session dots with glow ─────────────────────────────────────────
+def _draw_session_dots(img, x, y, count, current_session, dot_size=14, gap=8):
+    """Draw session indicator dots. Completed glow, current pulses, future dim."""
+    total_dots = max(count + 1, LONG_BREAK_EVERY)
+    now = time.monotonic()
+
     for i in range(total_dots):
         dx = x + i * (dot_size + gap)
         dy = y
+
         if i < count:
-            # Completed — filled
+            # Completed -- glowing filled dot
             color = ACCENT
             if (i + 1) % LONG_BREAK_EVERY == 0:
-                color = CYAN  # long break marker
-            draw.ellipse([dx, dy, dx + dot_size, dy + dot_size], fill=color)
+                color = CYAN
+            # Glow halo
+            pad = 8
+            size = dot_size + pad * 2
+            dot_layer = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+            dd = ImageDraw.Draw(dot_layer)
+            dd.ellipse([pad - 3, pad - 3, pad + dot_size + 3, pad + dot_size + 3],
+                       fill=color + (60,))
+            dot_layer = dot_layer.filter(ImageFilter.GaussianBlur(radius=4))
+            img.paste(dot_layer, (dx - pad, dy - pad), dot_layer)
+            # Sharp dot
+            sharp = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+            sd = ImageDraw.Draw(sharp)
+            sd.ellipse([pad, pad, pad + dot_size, pad + dot_size], fill=color + (255,))
+            # Bright core
+            core_pad = 3
+            bright = tuple(min(255, c + 80) for c in color)
+            sd.ellipse([pad + core_pad, pad + core_pad,
+                        pad + dot_size - core_pad, pad + dot_size - core_pad],
+                       fill=bright + (180,))
+            img.paste(sharp, (dx - pad, dy - pad), sharp)
         elif i == count:
-            # Current — outlined with pulse
-            draw.ellipse([dx, dy, dx + dot_size, dy + dot_size], outline=ACCENT, width=2)
-            # Inner fill based on phase
+            # Current -- pulsing dot
+            pulse = 1.0 + 0.15 * math.sin(now * 3.0)
+            r = int(dot_size * pulse / 2)
+            cx_d = dx + dot_size // 2
+            cy_d = dy + dot_size // 2
             inner_color = GREEN if _phase == 'WORK' else CYAN
-            inner_pad = 3
-            draw.ellipse([dx + inner_pad, dy + inner_pad,
-                          dx + dot_size - inner_pad, dy + dot_size - inner_pad],
-                         fill=inner_color)
+            # Glow
+            pad = 12
+            size = r * 2 + pad * 2
+            dot_layer = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+            dd = ImageDraw.Draw(dot_layer)
+            center = size // 2
+            dd.ellipse([center - r - 2, center - r - 2, center + r + 2, center + r + 2],
+                       fill=inner_color + (50,))
+            dot_layer = dot_layer.filter(ImageFilter.GaussianBlur(radius=5))
+            img.paste(dot_layer, (cx_d - size // 2, cy_d - size // 2), dot_layer)
+            # Outline ring
+            ring = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+            rd = ImageDraw.Draw(ring)
+            rd.ellipse([center - r, center - r, center + r, center + r],
+                       outline=ACCENT + (200,), width=2)
+            # Inner fill
+            inner_r = r - 3
+            if inner_r > 0:
+                rd.ellipse([center - inner_r, center - inner_r,
+                            center + inner_r, center + inner_r],
+                           fill=inner_color + (220,))
+            img.paste(ring, (cx_d - size // 2, cy_d - size // 2), ring)
         else:
-            # Future — dim outline
-            draw.ellipse([dx, dy, dx + dot_size, dy + dot_size],
-                         outline=BORDER, width=1)
+            # Future -- dim outline
+            pad = 4
+            size = dot_size + pad * 2
+            dot_layer = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+            dd = ImageDraw.Draw(dot_layer)
+            dd.ellipse([pad, pad, pad + dot_size, pad + dot_size],
+                       outline=TEXT_DIM + (80,), width=1)
+            img.paste(dot_layer, (dx - pad, dy - pad), dot_layer)
 
-def _draw_circular_progress(draw, cx, cy, radius, pct, color, width=8):
-    """Draw a circular progress arc."""
-    # Background circle
-    draw.arc([cx - radius, cy - radius, cx + radius, cy + radius],
-             0, 360, fill=BORDER, width=width)
-    # Progress arc (starts at top, goes clockwise)
+
+# ── Circular progress with dramatic glow ───────────────────────────
+def _draw_circular_progress(draw, img, cx, cy, radius, pct, color, width=12):
+    """Draw a circular progress arc with intense glow effect."""
+    bbox = [cx - radius, cy - radius, cx + radius, cy + radius]
+    # Background ring
+    draw.arc(bbox, 0, 360, fill=(25, 30, 45), width=width)
+
     if pct > 0:
-        start_angle = -90
-        end_angle = start_angle + (pct / 100) * 360
-        draw.arc([cx - radius, cy - radius, cx + radius, cy + radius],
-                 start_angle, end_angle, fill=color, width=width)
+        start = -90
+        end = start + (pct / 100) * 360
+
+        # Wide atmospheric glow
+        gpad = 30
+        gsize = radius * 2 + gpad * 2
+        glow = Image.new('RGBA', (gsize, gsize), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(glow)
+        gbbox = [gpad, gpad, gpad + radius * 2, gpad + radius * 2]
+        gd.arc(gbbox, start, end, fill=color + (80,), width=width + 16)
+        glow = glow.filter(ImageFilter.GaussianBlur(radius=12))
+        img.paste(glow, (cx - radius - gpad, cy - radius - gpad), glow)
+
+        # Tight core glow
+        glow2 = Image.new('RGBA', (gsize, gsize), (0, 0, 0, 0))
+        gd2 = ImageDraw.Draw(glow2)
+        gd2.arc(gbbox, start, end, fill=color + (160,), width=width + 4)
+        glow2 = glow2.filter(ImageFilter.GaussianBlur(radius=5))
+        img.paste(glow2, (cx - radius - gpad, cy - radius - gpad), glow2)
+
+        # Sharp arc
+        draw.arc(bbox, start, end, fill=color, width=width)
+
 
 # ── Main render ─────────────────────────────────────────────────────
 def render_frame(w=1920, h=440):
@@ -170,7 +362,8 @@ def render_frame(w=1920, h=440):
         remaining = _phase_duration
         pct_remaining = 100.0
 
-    img = Image.new('RGB', (w, h), BG)
+    # RGBA workflow — start with cached gradient background
+    img = _get_bg(w, h)
     draw = ImageDraw.Draw(img)
 
     pad = 6
@@ -185,7 +378,8 @@ def render_frame(w=1920, h=440):
     # Full-width progress bar at top
     # ═══════════════════════════════════════════════════════════════
     bar_h = 18
-    _draw_bar(draw, pad, py0, w - pad * 2, bar_h, pct_remaining, progress_color)
+    _draw_bar(draw, img, pad, py0, w - pad * 2, bar_h, pct_remaining, progress_color)
+    draw = ImageDraw.Draw(img)  # re-acquire after paste
 
     # ═══════════════════════════════════════════════════════════════
     # Main content area
@@ -193,11 +387,10 @@ def render_frame(w=1920, h=440):
     content_y = py0 + bar_h + pad
     content_h = ph - bar_h - pad
 
-    # ── Left section: Phase info + session count (20%) ──
-    left_w = int(w * 0.20)
-    draw.rectangle([pad, content_y, pad + left_w, content_y + content_h],
-                   fill=PANEL_BG, outline=BORDER)
-    draw.rectangle([pad, content_y, pad + left_w, content_y + 2], fill=phase_color)
+    # ── Left section: Phase + session info (18%) ──
+    left_w = int(w * 0.18)
+    _draw_panel(draw, img, pad, content_y, left_w, content_h, accent_color=phase_color)
+    draw = ImageDraw.Draw(img)
 
     # Phase label
     phase_label = _phase
@@ -206,156 +399,155 @@ def render_frame(w=1920, h=440):
             phase_label = "LONG BREAK"
         else:
             phase_label = "SHORT BREAK"
-    draw.text((pad + 16, content_y + 14), phase_label,
-              fill=phase_color, font=font(38))
+    draw.text((pad + 20, content_y + 16), phase_label,
+              fill=phase_color, font=font(36))
 
-    # Session info
+    # Session number
     sy = content_y + 70
-    draw.text((pad + 16, sy), "SESSION", fill=TEXT_DIM, font=font(14))
-    draw.text((pad + 16, sy + 22), f"#{_session_count + 1}",
-              fill=TEXT, font=font(48))
+    draw.text((pad + 20, sy), "SESSION", fill=TEXT_DIM, font=font(18))
+    draw.text((pad + 20, sy + 26), f"#{_session_count + 1}",
+              fill=TEXT_BRIGHT, font=font(52))
 
-    # Completed sessions
-    draw.text((pad + 16, sy + 80), "COMPLETED", fill=TEXT_DIM, font=font(14))
-    draw.text((pad + 16, sy + 100), str(_session_count),
-              fill=ACCENT, font=font(42))
+    # Completed
+    draw.text((pad + 20, sy + 95), "COMPLETED", fill=TEXT_DIM, font=font(18))
+    draw.text((pad + 20, sy + 121), str(_session_count),
+              fill=ACCENT, font=font(44))
 
-    # Total focus time
+    # Focus time
     total_mins = int(_total_work_time // 60)
-    draw.text((pad + 16, sy + 155), "FOCUS TIME", fill=TEXT_DIM, font=font(14))
+    draw.text((pad + 20, sy + 180), "FOCUS TIME", fill=TEXT_DIM, font=font(18))
     if total_mins >= 60:
-        draw.text((pad + 16, sy + 175), f"{total_mins // 60}h {total_mins % 60}m",
-                  fill=TEXT, font=font(28))
+        draw.text((pad + 20, sy + 206), f"{total_mins // 60}h {total_mins % 60}m",
+                  fill=TEXT, font=font(30))
     else:
-        draw.text((pad + 16, sy + 175), f"{total_mins}m",
-                  fill=TEXT, font=font(28))
+        draw.text((pad + 20, sy + 206), f"{total_mins}m",
+                  fill=TEXT, font=font(30))
 
-    # Session dots at bottom of left panel
-    dots_y = content_y + content_h - 30
-    _draw_session_dots(draw, pad + 16, dots_y, _session_count, _session_count)
-
-    # ── Center section: Massive timer + circular progress (55%) ──
+    # ── Center section: Massive timer + circular progress (57%) ──
     center_x = pad + left_w + pad
-    center_w = int(w * 0.55)
-    draw.rectangle([center_x, content_y, center_x + center_w, content_y + content_h],
-                   fill=PANEL_BG, outline=BORDER)
-    draw.rectangle([center_x, content_y, center_x + center_w, content_y + 2],
-                   fill=phase_color)
+    center_w = int(w * 0.57)
+    _draw_panel(draw, img, center_x, content_y, center_w, content_h, accent_color=phase_color)
+    draw = ImageDraw.Draw(img)  # re-acquire after paste
 
-    # Circular progress ring
+    # Circular progress ring (outer)
     ring_cx = center_x + center_w // 2
     ring_cy = content_y + content_h // 2
     ring_radius = min(center_w, content_h) // 2 - 30
-    _draw_circular_progress(draw, ring_cx, ring_cy, ring_radius,
+    _draw_circular_progress(draw, img, ring_cx, ring_cy, ring_radius,
                             pct_remaining, progress_color, width=12)
+    draw = ImageDraw.Draw(img)  # re-acquire after paste
 
     # Inner ring (thinner, phase color)
-    _draw_circular_progress(draw, ring_cx, ring_cy, ring_radius - 18,
+    _draw_circular_progress(draw, img, ring_cx, ring_cy, ring_radius - 18,
                             pct_remaining, phase_color, width=4)
+    draw = ImageDraw.Draw(img)  # re-acquire after paste
 
-    # Massive countdown timer centered in the ring
+    # Massive countdown timer centered in the ring — with dramatic glow
     mins = int(remaining // 60)
     secs = int(remaining % 60)
     timer_str = f"{mins:02d}:{secs:02d}"
 
-    timer_font = font(130)
-    bbox = draw.textbbox((0, 0), timer_str, font=timer_font)
-    tw = bbox[2] - bbox[0]
-    th = bbox[3] - bbox[1]
-    tx = ring_cx - tw // 2
-    ty = ring_cy - th // 2 - 20
+    # Timer + phase label measured together so they center as a unit
+    timer_font = font(100)
+    phase_font = font(28)
 
-    # Glow effect
-    glow = tuple(max(0, c // 3) for c in progress_color)
-    draw.text((tx - 1, ty - 1), timer_str, fill=glow, font=timer_font)
-    draw.text((tx + 1, ty + 1), timer_str, fill=glow, font=timer_font)
-    draw.text((tx, ty), timer_str, fill=progress_color, font=timer_font)
-
-    # Phase label under timer
-    phase_font = font(24)
+    bbox_t = draw.textbbox((0, 0), timer_str, font=timer_font)
+    tw = bbox_t[2] - bbox_t[0]
+    th = bbox_t[3] - bbox_t[1]
     bbox_p = draw.textbbox((0, 0), phase_label, font=phase_font)
     pw = bbox_p[2] - bbox_p[0]
+    ph_text = bbox_p[3] - bbox_p[1]
+
+    # Total block height: timer + generous gap + phase label
+    gap = 20
+    total_h = th + gap + ph_text
+    # Center the block vertically in the ring
+    block_top = ring_cy - total_h // 2
+
+    tx = ring_cx - tw // 2
+    ty = block_top
     px = ring_cx - pw // 2
-    py = ty + th + 20
+    py = block_top + th + gap
+
+    # Hero text glow
+    glow_pad = 30
+    glow_w = tw + glow_pad * 2
+    glow_h = th + glow_pad * 2
+    if glow_w > 0 and glow_h > 0:
+        text_glow = Image.new('RGBA', (glow_w, glow_h), (0, 0, 0, 0))
+        tg_draw = ImageDraw.Draw(text_glow)
+        tg_draw.text((glow_pad, glow_pad), timer_str,
+                     fill=progress_color + (120,), font=timer_font)
+        text_glow = text_glow.filter(ImageFilter.GaussianBlur(radius=14))
+        img.paste(text_glow, (tx - glow_pad, ty - glow_pad), text_glow)
+        draw = ImageDraw.Draw(img)
+
+    # Sharp timer text
+    draw.text((tx, ty), timer_str, fill=progress_color, font=timer_font)
+
+    # Phase label centered below timer
     draw.text((px, py), phase_label, fill=phase_color, font=phase_font)
 
-    # ── Right section: Detailed info (25%) ──
+    # ── Right section: Key info (25%) ──
     right_x = center_x + center_w + pad
     right_w = w - right_x - pad
-    draw.rectangle([right_x, content_y, right_x + right_w, content_y + content_h],
-                   fill=PANEL_BG, outline=BORDER)
-    draw.rectangle([right_x, content_y, right_x + right_w, content_y + 2],
-                   fill=phase_color)
+    _draw_panel(draw, img, right_x, content_y, right_w, content_h, accent_color=phase_color)
+    draw = ImageDraw.Draw(img)
 
-    ry = content_y + 14
-    row_gap = 44
+    rx = right_x + 20
+    ry = content_y + 16
 
-    # Duration info
-    draw.text((right_x + 16, ry), "DURATION", fill=TEXT_DIM, font=font(14))
-    draw.text((right_x + 16, ry + 20), f"{_phase_duration // 60} minutes",
-              fill=TEXT, font=font(26))
-
-    # Elapsed
-    ry += row_gap + 20
-    elapsed_mins = int(elapsed // 60)
-    elapsed_secs = int(elapsed % 60)
-    draw.text((right_x + 16, ry), "ELAPSED", fill=TEXT_DIM, font=font(14))
-    draw.text((right_x + 16, ry + 20), f"{elapsed_mins:02d}:{elapsed_secs:02d}",
-              fill=TEXT, font=font(26))
+    # Duration
+    draw.text((rx, ry), "DURATION", fill=TEXT_DIM, font=font(18))
+    draw.text((rx, ry + 24), f"{_phase_duration // 60} minutes",
+              fill=TEXT_BRIGHT, font=font(30))
 
     # Remaining
-    ry += row_gap + 20
-    draw.text((right_x + 16, ry), "REMAINING", fill=TEXT_DIM, font=font(14))
-    draw.text((right_x + 16, ry + 20), f"{mins:02d}:{secs:02d}",
-              fill=progress_color, font=font(26))
-
-    # Percentage
-    ry += row_gap + 20
-    draw.text((right_x + 16, ry), "PROGRESS", fill=TEXT_DIM, font=font(14))
-    done_pct = 100.0 - pct_remaining
-    draw.text((right_x + 16, ry + 20), f"{done_pct:.0f}%",
+    ry += 75
+    draw.text((rx, ry), "REMAINING", fill=TEXT_DIM, font=font(18))
+    draw.text((rx, ry + 24), f"{mins:02d}:{secs:02d}",
               fill=progress_color, font=font(34))
 
-    # Next phase preview
-    ry += row_gap + 30
-    draw.rectangle([right_x + 1, ry, right_x + right_w - 1, ry + 1], fill=BORDER)
-    ry += 8
-    draw.text((right_x + 16, ry), "NEXT UP", fill=TEXT_DIM, font=font(14))
+    # Progress
+    ry += 80
+    done_pct = 100.0 - pct_remaining
+    draw.text((rx, ry), "PROGRESS", fill=TEXT_DIM, font=font(18))
+    draw.text((rx, ry + 24), f"{done_pct:.0f}%",
+              fill=progress_color, font=font(38))
+
+    # Next up
+    ry += 85
+    draw.text((rx, ry), "NEXT UP", fill=TEXT_DIM, font=font(18))
     if _phase == 'WORK':
         if (_session_count + 1) % LONG_BREAK_EVERY == 0:
             next_label = "LONG BREAK (15m)"
-            next_color = CYAN
         else:
             next_label = "SHORT BREAK (5m)"
-            next_color = CYAN
+        next_color = CYAN
     else:
         next_label = "WORK (25m)"
         next_color = GREEN
-    draw.text((right_x + 16, ry + 22), next_label,
-              fill=next_color, font=font(22))
-
-    # Cycle progress (how many sessions until long break)
-    ry += 60
-    cycle_pos = _session_count % LONG_BREAK_EVERY
-    if _phase == 'WORK':
-        cycle_pos_display = cycle_pos + 1
-    else:
-        cycle_pos_display = cycle_pos
-    draw.text((right_x + 16, ry), "CYCLE", fill=TEXT_DIM, font=font(14))
-    draw.text((right_x + 16, ry + 20),
-              f"{cycle_pos_display} / {LONG_BREAK_EVERY}",
-              fill=TEXT, font=font(22))
+    draw.text((rx, ry + 24), next_label, fill=next_color, font=font(26))
 
     # ═══════════════════════════════════════════════════════════════
-    # Full-width progress bar at bottom (duplicate for visibility)
+    # Full-width progress bar at bottom
     # ═══════════════════════════════════════════════════════════════
     bot_bar_y = h - pad - bar_h
-    _draw_bar(draw, pad, bot_bar_y, w - pad * 2, bar_h, pct_remaining, progress_color)
+    _draw_bar(draw, img, pad, bot_bar_y, w - pad * 2, bar_h, pct_remaining, progress_color)
+    draw = ImageDraw.Draw(img)
 
-    # Bottom accent line
-    draw.rectangle([0, h - 2, w, h], fill=(0, 80, 140))
+    # ═══════════════════════════════════════════════════════════════
+    # Bottom glowing accent line
+    # ═══════════════════════════════════════════════════════════════
+    for i in range(8):
+        a = int(180 * (1.0 - i / 8))
+        draw.line([(0, h - 1 - i), (w, h - 1 - i)], fill=ACCENT + (a,))
 
-    return img
+    # Apply scanlines and convert RGBA -> RGB
+    img = Image.alpha_composite(img, _get_scanlines(w, h))
+    out = Image.new('RGB', (w, h), BG)
+    out.paste(img, (0, 0), img)
+    return out
 
 
 # ── Standalone mode ─────────────────────────────────────────────────

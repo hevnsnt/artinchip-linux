@@ -9,7 +9,7 @@ import socket
 import subprocess
 import time
 from datetime import datetime
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 # --- Visual style (dark theme) ---
 BG = (10, 12, 18)
@@ -23,12 +23,12 @@ RED = (255, 60, 60)
 CYAN = (0, 220, 220)
 PURPLE = (160, 100, 255)
 
-# Matrix-specific colours
-MATRIX_HEAD = (220, 255, 220)
-MATRIX_BRIGHT = (0, 255, 70)
-MATRIX_MID = (0, 180, 50)
-MATRIX_DIM = (0, 80, 25)
-MATRIX_DARK = (0, 40, 12)
+# Matrix-specific colours — dramatic gradient from white-hot head to deep green
+MATRIX_HEAD = (255, 255, 255)
+MATRIX_BRIGHT = (150, 255, 150)
+MATRIX_MID = (0, 255, 65)
+MATRIX_DIM = (0, 180, 40)
+MATRIX_DARK = (0, 100, 25)
 MATRIX_BG = (0, 0, 0)
 
 # --- Font cache ---
@@ -44,6 +44,20 @@ def font(size):
                 continue
         _fonts[size] = ImageFont.load_default()
     return _fonts[size]
+
+# --- Scanline overlay cache ---
+_scanline_cache = {}
+
+def _get_scanlines(w, h):
+    """Semi-transparent horizontal scanlines for CRT effect. Cached."""
+    key = (w, h)
+    if key not in _scanline_cache:
+        sl = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+        sd = ImageDraw.Draw(sl)
+        for y in range(0, h, 3):
+            sd.line([(0, y), (w, y)], fill=(0, 0, 0, 55))
+        _scanline_cache[key] = sl
+    return _scanline_cache[key]
 
 # --- Character pools ---
 # Katakana range U+30A0..U+30FF, plus latin and digits
@@ -65,7 +79,8 @@ class Column:
         self.x = x
         self.rows = rows
         self.char_h = char_h
-        self.speed = random.uniform(0.3, 1.5)  # rows per frame
+        self.depth = random.uniform(0.3, 1.0)
+        self.speed = random.uniform(0.3, 1.5) * self.depth
         self.pos = random.uniform(-rows, 0)  # current head position (float)
         self.trail_len = random.randint(8, min(30, rows))
         self.chars = [_random_char() for _ in range(rows)]
@@ -84,7 +99,8 @@ class Column:
         # Reset when fully off screen
         if self.pos - self.trail_len > self.rows:
             self.pos = random.uniform(-self.trail_len, -2)
-            self.speed = random.uniform(0.3, 1.5)
+            self.depth = random.uniform(0.3, 1.0)
+            self.speed = random.uniform(0.3, 1.5) * self.depth
             self.trail_len = random.randint(8, min(30, self.rows))
 
     def draw(self, draw_ctx, f):
@@ -105,6 +121,8 @@ class Column:
                 color = MATRIX_DIM
             else:
                 color = MATRIX_DARK
+            # Scale color by depth — far columns are dimmer
+            color = tuple(int(c * self.depth) for c in color)
             draw_ctx.text((self.x, y), ch, fill=color, font=f)
 
 
@@ -186,45 +204,85 @@ def render_frame(w=1920, h=440):
         col.advance()
         col.draw(draw, f)
 
-    # --- Overlay: syslog lines (refresh every 5 seconds) ---
+    # --- Dim rain to background level ---
+    img = ImageEnhance.Brightness(img).enhance(0.55)
+
+    # --- Subtle phosphor bloom ---
+    bloom = img.filter(ImageFilter.GaussianBlur(radius=4))
+    bloom = ImageEnhance.Brightness(bloom).enhance(0.35)
+    img = ImageChops.add(img, bloom)
+
+    # --- Bottom reflection (subtle) ---
+    reflect_h = 40
+    if h > reflect_h * 2:
+        strip = img.crop((0, h - reflect_h * 2, w, h - reflect_h))
+        strip = strip.transpose(Image.FLIP_TOP_BOTTOM)
+        strip = ImageEnhance.Brightness(strip).enhance(0.1)
+        img.paste(strip, (0, h - reflect_h))
+
+    img_rgba = img.convert('RGBA')
+    draw = ImageDraw.Draw(img_rgba)
+
+    # --- Syslog: THE PRIMARY CONTENT ---
+    # Fetch more lines, refresh more often
     now = time.time()
-    if now - _last_syslog_time > 5:
-        _last_syslog = _get_syslog_lines(5)
+    if now - _last_syslog_time > 3:
+        _last_syslog = _get_syslog_lines(15)
         _last_syslog_time = now
 
-    overlay_font = font(14)
-    syslog_y = h - 20 * len(_last_syslog) - 10
-    for i, line in enumerate(_last_syslog):
-        # Truncate long lines
-        disp = line[:160] if len(line) > 160 else line
-        y_pos = syslog_y + i * 20
-        if y_pos < 0:
-            continue
-        # Draw with a subtle dark background for readability
-        text_bbox = draw.textbbox((10, y_pos), disp, font=overlay_font)
-        draw.rectangle(
-            [text_bbox[0] - 2, text_bbox[1] - 1, text_bbox[2] + 2, text_bbox[3] + 1],
-            fill=(0, 0, 0, 180) if img.mode == 'RGBA' else (0, 5, 0),
-        )
-        draw.text((10, y_pos), disp, fill=MATRIX_BRIGHT, font=overlay_font)
+    header_h = 42
+    draw = ImageDraw.Draw(img_rgba)
 
-    # --- Overlay: hostname, time, IP at fixed positions ---
-    info_font = font(20)
-    bold_font = font(24)
+    # Hostname / time / IP — with drop shadow for readability over rain
+    bold_font = font(26)
+    def _shadow_text(draw, x, y, text, color, f):
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                if dx or dy:
+                    draw.text((x + dx, y + dy), text, fill=(0, 0, 0, 255), font=f)
+        draw.text((x + 1, y + 1), text, fill=(0, 0, 0, 255), font=f)
+        draw.text((x, y), text, fill=color, font=f)
 
-    # Hostname - top left
-    draw.text((16, 10), _hostname, fill=MATRIX_HEAD, font=bold_font)
-
-    # Time - top center
+    _shadow_text(draw, 16, 8, _hostname, MATRIX_HEAD, bold_font)
     time_str = datetime.now().strftime('%H:%M:%S')
     time_bbox = draw.textbbox((0, 0), time_str, font=bold_font)
     time_w = time_bbox[2] - time_bbox[0]
-    draw.text(((w - time_w) // 2, 10), time_str, fill=MATRIX_HEAD, font=bold_font)
-
-    # IP - top right
-    ip_str = _ip_address
-    ip_bbox = draw.textbbox((0, 0), ip_str, font=info_font)
+    _shadow_text(draw, (w - time_w) // 2, 8, time_str, MATRIX_HEAD, bold_font)
+    ip_font = font(20)
+    ip_bbox = draw.textbbox((0, 0), _ip_address, font=ip_font)
     ip_w = ip_bbox[2] - ip_bbox[0]
-    draw.text((w - ip_w - 16, 14), ip_str, fill=MATRIX_BRIGHT, font=info_font)
+    _shadow_text(draw, w - ip_w - 16, 12, _ip_address, MATRIX_BRIGHT, ip_font)
+
+    # Log lines — large, filling most of the screen
+    log_font = font(20)
+    line_h = 28
+    log_top = header_h + 4
+    max_lines = (h - log_top - 8) // line_h
+    lines_to_show = _last_syslog[-max_lines:] if _last_syslog else []
+
+    for i, line in enumerate(lines_to_show):
+        y_pos = log_top + i * line_h
+        # Truncate to fit width
+        disp = line[:140] if len(line) > 140 else line
+
+        # No background bar — text sits directly on the rain
+
+        # Cyberpunk color coding
+        if any(kw in disp.lower() for kw in ['error', 'fail', 'crit', 'fatal']):
+            text_color = (255, 40, 80, 255)   # hot pink / neon red
+        elif any(kw in disp.lower() for kw in ['warn', 'timeout', 'denied']):
+            text_color = (255, 180, 0, 255)   # amber
+        elif any(kw in disp.lower() for kw in ['start', 'up', 'connect', 'success', 'ok']):
+            text_color = (0, 255, 180, 255)   # neon teal
+        elif any(kw in disp.lower() for kw in ['session', 'auth', 'login', 'ssh']):
+            text_color = (200, 80, 255, 255)  # neon purple
+        else:
+            text_color = (0, 230, 255, 255)   # cyan
+
+        _shadow_text(draw, 16, y_pos, disp, text_color, log_font)
+
+    # --- Scanline overlay ---
+    img_rgba = Image.alpha_composite(img_rgba, _get_scanlines(w, h))
+    img = img_rgba.convert('RGB')
 
     return img
