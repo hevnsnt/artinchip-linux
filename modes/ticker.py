@@ -314,20 +314,21 @@ def _draw_coin_card(draw, img, x, y, w, h, coin_id, symbol):
 
     # ── Hero price with glow ──
     price_str = _format_price(price) if price else "---"
-    _draw_hero_text(draw, img, x + pad, y + 56, price_str, TEXT_BRIGHT, 48)
+    _draw_hero_text(draw, img, x + pad, y + 58, price_str, TEXT_BRIGHT, 58)
 
-    # ── Sparkline — bottom portion of card ──
-    spark_y = y + 125
-    spark_h = h - 150
+    # ── Sparkline — fills remaining card space ──
+    spark_y = y + 135
+    spark_h = h - spark_y + y - 8
     spark_w = w - pad * 2
-    if spark_h > 20:
+    if spark_h > 20 and len(history) >= 2:
         _draw_sparkline(draw, img, x + pad, spark_y, spark_w, spark_h,
                         history, perf_color)
-
-    # ── Fetch count label under sparkline ──
-    if spark_h > 20 and history:
-        draw.text((x + pad, spark_y + spark_h + 4),
-                  f"Last {len(history)} fetches", fill=TEXT_DIM, font=font(12))
+    elif spark_h > 20:
+        # No data yet — show placeholder
+        draw.rectangle([x + pad, spark_y, x + pad + spark_w, spark_y + spark_h],
+                       fill=(10, 13, 20))
+        draw.text((x + pad + spark_w // 2 - 60, spark_y + spark_h // 2 - 10),
+                  "Collecting data...", fill=TEXT_DIM, font=font(16))
 
 # ── Main render ─────────────────────────────────────────────────────
 def render_frame(w=1920, h=440):
@@ -369,11 +370,11 @@ def render_frame(w=1920, h=440):
         out.paste(img, (0, 0), img)
         return out
 
-    # Card dimensions
+    # Card dimensions — leave room for status bar at bottom
     card_w = 320
-    card_h = h - 30  # top and bottom margin
+    card_h = h - 44
     card_gap = 24
-    card_y = 12
+    card_y = 8
     num_coins = len(COINS)
     total_strip_w = num_coins * (card_w + card_gap)
 
@@ -391,15 +392,14 @@ def render_frame(w=1920, h=440):
             _draw_coin_card(draw, img, int(cx), card_y, card_w, card_h,
                             coin_id, symbol)
 
-    # ── Bottom status bar ──
-    # Status text
-    draw.text((10, h - 22), "CRYPTO TICKER", fill=TEXT_DIM, font=font(13))
+    # ── Bottom status bar — readable ──
+    draw.text((12, h - 34), "CRYPTO TICKER", fill=ACCENT, font=font(18))
     if _last_fetch > 0:
         ago = int(now - _last_fetch)
-        draw.text((w - 200, h - 22), f"Updated {ago}s ago", fill=TEXT_DIM, font=font(13))
+        draw.text((w - 240, h - 34), f"Updated {ago}s ago", fill=TEXT, font=font(18))
     if _fetch_error:
-        draw.text((w // 2 - 100, h - 22), f"API: {_fetch_error[:40]}",
-                  fill=YELLOW, font=font(13))
+        draw.text((w // 2 - 120, h - 34), f"API: {_fetch_error[:40]}",
+                  fill=YELLOW, font=font(18))
 
     # Glowing bottom accent line
     for i in range(8):
