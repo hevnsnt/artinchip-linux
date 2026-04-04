@@ -448,8 +448,8 @@ def render_frame(w=1920, h=440):
     timer_str = f"{mins:02d}:{secs:02d}"
 
     # Timer + phase label measured together so they center as a unit
-    timer_font = font(110)
-    phase_font = font(26)
+    timer_font = font(100)
+    phase_font = font(28)
 
     bbox_t = draw.textbbox((0, 0), timer_str, font=timer_font)
     tw = bbox_t[2] - bbox_t[0]
@@ -458,8 +458,8 @@ def render_frame(w=1920, h=440):
     pw = bbox_p[2] - bbox_p[0]
     ph_text = bbox_p[3] - bbox_p[1]
 
-    # Total block height: timer + gap + phase label
-    gap = 8
+    # Total block height: timer + generous gap + phase label
+    gap = 20
     total_h = th + gap + ph_text
     # Center the block vertically in the ring
     block_top = ring_cy - total_h // 2
