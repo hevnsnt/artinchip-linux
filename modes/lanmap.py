@@ -339,6 +339,7 @@ def render_frame(w=1920, h=440):
     if GROUP_BY_TYPE:
         hosts_rest.sort(key=lambda e: (
             _TYPE_ORDER.get(e['type'], 99),
+            e['type'],  # alphabetical within same priority group
             tuple(int(o) for o in e['ip'].split('.'))
         ))
 
