@@ -996,7 +996,7 @@ def mode_image(disp, path, quality):
 # ── Mode: generic module runner ─────────────────────────────────────
 MODES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'modes')
 ALL_MODES = ['sysmon', 'ticker', 'clock', 'matrix', 'visualizer',
-             'nowplaying', 'docker', 'netmon', 'lanmap', 'pihole', 'news', 'pomodoro']
+             'nowplaying', 'docker', 'netmon', 'lanmap', 'pihole', 'speedtest', 'news', 'pomodoro']
 
 def _load_mode(name):
     """Import a mode module by name. Returns module or None."""
@@ -1013,6 +1013,7 @@ def _load_mode(name):
         'netmon': 'netmon',
         'lanmap': 'lanmap',
         'pihole': 'pihole',
+        'speedtest': 'speedtest_mode',
         'news': 'newscrawl',
         'pomodoro': 'pomodoro',
     }
@@ -1063,6 +1064,7 @@ def _mode_fps(name):
         'netmon':     1/2,   # 2fps  — connection updates
         'lanmap':     1/2,   # 2fps  — network scan display
         'pihole':     1/2,   # 2fps  — DNS stats
+        'speedtest':  1/2,   # 2fps  — speed test display
         'pomodoro':   1,     # 1fps  — countdown seconds
     }.get(name, 1.0)
 
@@ -1219,6 +1221,7 @@ def main():
     group.add_argument('--netmon', action='store_true', help='Network connections monitor')
     group.add_argument('--lanmap', action='store_true', help='Network device scanner (nmap)')
     group.add_argument('--pihole', action='store_true', help='DNS ad-blocker stats (AdGuard/Pi-hole)')
+    group.add_argument('--speedtest', action='store_true', help='Internet speed test dashboard')
     parser.add_argument('--group', action='store_true',
                         help='Group lanmap results by device type')
     group.add_argument('--news', action='store_true', help='RSS news crawl')
