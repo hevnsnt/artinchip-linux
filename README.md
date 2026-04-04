@@ -10,20 +10,26 @@ These cheap USB-C bar monitors ship with Windows-only drivers and have **zero Li
 
 ## Screenshots
 
-**System Monitor** — CPU cores, temps, GPU, memory, network with sparkline graphs:
+**System Monitor** — CPU cores, temps, GPU, memory, disk, swap, network:
 ![sysmon](screenshots/sysmon.png)
 
-**Crypto Ticker** — live prices from CoinGecko with 24h change and sparklines:
+**Crypto Ticker** — live prices from CoinGecko with 24h change:
 ![ticker](screenshots/ticker.png)
-
-**Docker Monitor** — container status, CPU/memory bars, network I/O:
-![docker](screenshots/docker_mon.png)
 
 **Clock + Weather** — animated weather scenes, 12hr time, system stats:
 ![clock](screenshots/clock.png)
 
+**Docker Monitor** — container status, CPU/memory bars, network I/O:
+![docker](screenshots/docker_mon.png)
+
 **Network Monitor** — active connections, state breakdown, process names:
 ![netmon](screenshots/netmon.png)
+
+**Matrix Rain** — digital rain effect with live syslog data:
+![matrix](screenshots/matrix.png)
+
+**Pomodoro Timer** — 25/5 focus timer with circular progress:
+![pomodoro](screenshots/pomodoro.png)
 
 ## Supported Hardware
 
@@ -67,7 +73,8 @@ The installer handles dependencies, udev rules, and puts `tinyscreen` in your PA
 
 | Mode | Flag | Description |
 |------|------|-------------|
-| **Website** | `--url URL` | **60fps real-time** via headless Chromium CDP screencast |
+| **Website** | `--url URL` | Low-CPU via EVDI virtual display + Chromium (auto-fallback to CDP) |
+| **Virtual Monitor** | `--monitor` | EVDI — tinyscreen becomes a real Linux display |
 | **YouTube** | `--video URL` | Fetches up to 4K source, scales to display |
 | **Local Video** | `--video FILE` | Any format ffmpeg supports, `--loop` to repeat |
 | **Static Image** | `--image FILE` | Display any image file |
@@ -82,9 +89,12 @@ tinyscreen --ticker
 tinyscreen --docker
 tinyscreen --clock
 
-# Display a website (60fps real-time rendering)
+# Display a website (low CPU via EVDI virtual display)
 tinyscreen --url https://your-dashboard.example.com/
-tinyscreen --url http://egon.local:8420/ --rotate 180
+tinyscreen --url http://192.168.1.178:8420/
+
+# Use as a regular monitor (show anything from your desktop)
+tinyscreen --monitor
 
 # Rotate through modes (30 seconds each)
 tinyscreen --show all --delay 30
@@ -125,19 +135,55 @@ All commands run in the background by default. Add `--fg` to run in foreground.
 | `--loop` | Loop video playback |
 | `--fg` | Run in foreground (don't daemonize) |
 | `--screenshot [FILE]` | Capture current URL render to PNG |
-| `--off` | Stop the running instance |
+| `--monitor` | EVDI virtual monitor — tinyscreen becomes a real display |
+| `--off` | Stop the running instance and blank the display |
 | `--status` | Show current status |
 | `--test` | Show test pattern |
 
 ## Website Mode (--url)
 
-The `--url` mode renders websites at **60fps in real-time** using:
+The `--url` mode displays websites using **EVDI** (preferred) or CDP screencast (fallback):
 
-1. **Headless Chromium** with Chrome DevTools Protocol (CDP)
-2. **CDP Page.startScreencast** — Chromium pushes every rendered frame via WebSocket
-3. Frames are JPEG-encoded by Chromium and sent directly to the USB display
+**EVDI mode (default when available, <5% CPU):**
+1. Creates a **virtual monitor** via the EVDI kernel module
+2. Launches a real Chromium browser window on the virtual display
+3. The EVDI bridge captures pixels and streams them to USB
+4. CSS animations, JavaScript, and live dashboards all render at up to 30fps
 
-This means CSS animations, JavaScript updates, progress bars, and live dashboard data all render smoothly on the bar display. The page's JavaScript keeps running continuously — it's a real browser, not screenshots.
+**CDP fallback (no EVDI, ~90% CPU):**
+1. Headless Chromium with Chrome DevTools Protocol screencast
+2. Works without EVDI but uses significantly more CPU
+
+EVDI is auto-detected. If available, `--url` uses it automatically. If not, it falls back to CDP with a log warning.
+
+## Virtual Monitor Mode (--monitor)
+
+`--monitor` makes the tinyscreen appear as a **real Linux display** in your desktop environment:
+
+```bash
+tinyscreen --monitor
+```
+
+After starting, the tinyscreen shows up in `xrandr` as `DVI-I-1-1` (or similar). You can drag windows onto it, extend your desktop, or use it as a dedicated status display. Pair it with any dashboard webpage, terminal, or application.
+
+### EVDI Setup (required for --monitor and low-CPU --url)
+
+```bash
+# Install EVDI
+sudo apt install evdi-dkms libevdi1
+
+# Load at boot
+echo "evdi" | sudo tee /etc/modules-load.d/evdi.conf
+echo "options evdi initial_device_count=1" | sudo tee /etc/modprobe.d/evdi.conf
+
+# Load now (or reboot)
+sudo modprobe evdi initial_device_count=1
+
+# IMPORTANT: Restart your display manager so X11 detects the EVDI card
+sudo systemctl restart lightdm   # or gdm3 for Ubuntu/GNOME
+```
+
+**Requirements:** X11 desktop session (XFCE, GNOME, KDE), `evdi-dkms`, `libevdi1`, `xdotool`.
 
 ### Designing Pages for the Bar Display
 
@@ -290,20 +336,29 @@ Auth command (20 bytes, same struct):
 
 ```
 /opt/tinyscreen/
-├── tinyscreen.py      # main driver + daemon + all mode dispatch
-├── tinyscreen         # shell wrapper
-├── sysmon.py          # system monitor renderer
-├── config.yml         # default configuration
+├── tinyscreen.py          # main driver + daemon + all mode dispatch
+├── tinyscreen             # shell wrapper
+├── tinyscreen-evdi.py     # EVDI virtual display bridge daemon
+├── evdi_wrapper.py        # ctypes bindings for libevdi.so
+├── edid.py                # EDID generator for 1920x440
+├── edid_1920x440.bin      # pre-generated EDID binary
+├── launch-dashboard.sh    # standalone dashboard launcher
+├── configure-display.sh   # xrandr display positioning helper
+├── sysmon.py              # system monitor renderer
+├── config.yml             # default configuration
 ├── modes/
-│   ├── ticker.py      # crypto price ticker
-│   ├── clock.py       # clock + animated weather + system info
-│   ├── matrix.py      # matrix digital rain
-│   ├── visualizer.py  # audio spectrum analyzer
-│   ├── nowplaying.py  # MPRIS now playing
-│   ├── docker_mon.py  # docker container monitor
-│   ├── netmon.py      # network connections
-│   ├── newscrawl.py   # RSS news crawl
-│   └── pomodoro.py    # focus timer
+│   ├── ticker.py          # crypto price ticker
+│   ├── clock.py           # clock + animated weather + system info
+│   ├── matrix.py          # matrix digital rain
+│   ├── visualizer.py      # audio spectrum analyzer
+│   ├── nowplaying.py      # MPRIS now playing
+│   ├── docker_mon.py      # docker container monitor
+│   ├── netmon.py          # network connections
+│   ├── newscrawl.py       # RSS news crawl
+│   └── pomodoro.py        # focus timer
+├── tests/
+│   └── test_edid.py       # EDID generator unit tests
+├── tinyscreen-evdi.service # systemd unit for EVDI bridge
 ├── install.sh
 └── uninstall.sh
 ```
