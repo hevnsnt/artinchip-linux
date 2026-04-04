@@ -1,0 +1,18 @@
+[Unit]
+Description=tinyscreen EVDI bridge - ArtInChip USB bar display
+After=graphical.target
+Wants=graphical.target
+
+[Service]
+Type=simple
+ExecStartPre=/sbin/modprobe evdi initial_device_count=1
+ExecStart=/usr/bin/python3 /opt/tinyscreen/tinyscreen-evdi.py --fg
+ExecStop=/usr/bin/python3 /opt/tinyscreen/tinyscreen-evdi.py --stop
+Restart=on-failure
+RestartSec=5
+Environment=PATH=/home/linuxbrew/.linuxbrew/bin:/home/haxxx/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/root
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=multi-user.target

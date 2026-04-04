@@ -363,9 +363,10 @@ def _find_other_pids():
     return pids
 
 def _kill_tinyscreen_children():
-    """Kill orphaned Xvfb, xvfb-run, and headless chromium from tinyscreen."""
+    """Kill orphaned Xvfb, xvfb-run, headless chromium, and EVDI processes."""
     for pattern in ['xvfb-run.*tinyscreen', 'chromium.*remote-debugging-port=9222',
-                    'Xvfb :98', 'Xvfb :99', 'Xvfb :10']:
+                    'Xvfb :98', 'Xvfb :99', 'Xvfb :10',
+                    'tinyscreen-evdi', 'chromium.*tinyscreen-display']:
         subprocess.run(['pkill', '-9', '-f', pattern], capture_output=True)
 
 def _stop_others():
@@ -414,6 +415,224 @@ def stop_existing():
             os.unlink(f)
         except (FileNotFoundError, PermissionError):
             pass
+
+def _send_blank_frame():
+    """Send a black frame to blank the display."""
+    try:
+        dev = find_device()
+        if not dev:
+            return
+        setup_device(dev)
+        w, h, fmt, _ = get_params(dev)
+        authenticate(dev)
+        black = Image.new('RGB', (w, h), (0, 0, 0))
+        jpeg = image_to_jpeg(black, 50)
+        send_frame(dev, jpeg, fmt, 0)
+        usb.util.release_interface(dev, 0)
+    except Exception:
+        pass
+
+def _evdi_available():
+    """Check if EVDI module is loaded or can be loaded."""
+    try:
+        result = subprocess.run(['lsmod'], capture_output=True, timeout=5)
+        if b'evdi' in result.stdout:
+            return True
+        subprocess.run(['modprobe', 'evdi', 'initial_device_count=1'],
+                       check=True, capture_output=True, timeout=10)
+        time.sleep(2)
+        return True
+    except Exception:
+        return False
+
+def _configure_evdi_display():
+    """Find and configure the EVDI xrandr output. Returns (output_name, primary_height)."""
+    try:
+        out = subprocess.check_output(['xrandr'], timeout=10, stderr=subprocess.DEVNULL).decode()
+    except Exception:
+        return None, 1080
+
+    # Find EVDI output
+    evdi_output = None
+    for line in out.splitlines():
+        if ' connected' in line:
+            name = line.split()[0]
+            if not any(x in name for x in ['eDP', 'HDMI', 'DP-']):
+                evdi_output = name
+                break
+    if not evdi_output:
+        return None, 1080
+
+    # Find primary display and its height
+    primary = None
+    primary_height = 1080
+    for line in out.splitlines():
+        if ' connected primary' in line:
+            primary = line.split()[0]
+            m = re.search(r'(\d+)x(\d+)\+', line)
+            if m:
+                primary_height = int(m.group(2))
+            break
+        elif ' connected' in line and evdi_output not in line:
+            name = line.split()[0]
+            if any(x in name for x in ['eDP', 'HDMI', 'DP-']):
+                primary = name
+                m = re.search(r'(\d+)x(\d+)\+', line)
+                if m:
+                    primary_height = int(m.group(2))
+
+    # Configure the display
+    cmd = ['xrandr', '--output', evdi_output, '--mode', '1920x440', '--rotate', 'inverted']
+    if primary:
+        cmd += ['--below', primary]
+    else:
+        cmd += ['--pos', f'0x{primary_height}']
+    subprocess.run(cmd, timeout=10, capture_output=True)
+    return evdi_output, primary_height
+
+def mode_evdi(url, fps, fg):
+    """EVDI virtual monitor mode. If url is given, also launches a browser on the display."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    bridge_script = os.path.join(script_dir, 'tinyscreen-evdi.py')
+
+    if not os.path.exists(bridge_script):
+        log("ERROR: tinyscreen-evdi.py not found")
+        return
+
+    # Detect X display
+    display = os.environ.get('DISPLAY', ':0')
+    xauth = os.environ.get('XAUTHORITY', '')
+    if not xauth:
+        for path in ['/var/run/lightdm/root/:0',
+                     f'/home/{os.environ.get("SUDO_USER", "")}/{".Xauthority"}',
+                     os.path.expanduser('~/.Xauthority')]:
+            if os.path.exists(path):
+                xauth = path
+                break
+    os.environ['DISPLAY'] = display
+    if xauth:
+        os.environ['XAUTHORITY'] = xauth
+
+    # Load EVDI module
+    if not _evdi_available():
+        log("ERROR: EVDI not available. Install: sudo apt install evdi-dkms libevdi1")
+        return
+
+    # Start the EVDI bridge
+    log("Starting EVDI bridge...")
+    bridge = subprocess.Popen(
+        ['python3', bridge_script, '--fg', '--max-fps', str(fps)],
+        stdout=open('/tmp/tinyscreen-evdi.log', 'a'),
+        stderr=subprocess.STDOUT)
+    _child_procs.append(bridge)
+    time.sleep(5)
+
+    if bridge.poll() is not None:
+        log("ERROR: EVDI bridge failed. Check /tmp/tinyscreen-evdi.log")
+        return
+    log(f"EVDI bridge running (PID {bridge.pid})")
+
+    # Configure the display
+    evdi_output, primary_height = _configure_evdi_display()
+    if not evdi_output:
+        log("ERROR: No EVDI display output found")
+        bridge.terminate()
+        return
+    log(f"Display configured: {evdi_output} below primary (y={primary_height})")
+    time.sleep(2)
+
+    # If URL mode, launch a browser on the EVDI display
+    browser_proc = None
+    if url:
+        browser = None
+        for b in ['chromium', 'chromium-browser', 'google-chrome']:
+            if shutil.which(b):
+                browser = b
+                break
+        if not browser:
+            log("ERROR: No browser found (chromium/google-chrome)")
+            bridge.terminate()
+            return
+
+        # Move XFCE panel off the tinyscreen display
+        if primary:
+            subprocess.run(['xfconf-query', '-c', 'xfce4-panel',
+                           '-p', '/panels/panel-1/output-name',
+                           '-s', primary, '--create', '-t', 'string'],
+                          capture_output=True, timeout=5)
+            subprocess.run(['xfce4-panel', '--restart'],
+                          capture_output=True, timeout=5)
+            time.sleep(1)
+
+        log(f"Launching {browser} -> {url}")
+        browser_proc = subprocess.Popen([
+            browser, '--no-first-run', '--no-sandbox',
+            '--test-type',  # suppresses "unsupported flag" warning bar
+            '--disable-session-crashed-bubble', '--noerrdialogs',
+            '--disable-infobars',
+            '--class=tinyscreen-display',
+            '--window-size=1920,440',
+            f'--window-position=0,{primary_height}',
+            f'--app={url}'
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _child_procs.append(browser_proc)
+        time.sleep(5)
+
+        # Position the window with xdotool
+        if shutil.which('xdotool'):
+            try:
+                result = subprocess.run(
+                    ['xdotool', 'search', '--class', 'tinyscreen-display'],
+                    capture_output=True, text=True, timeout=10)
+                wids = result.stdout.strip().split('\n')
+                wid = wids[-1] if wids and wids[-1] else None
+                if wid:
+                    subprocess.run(['xdotool', 'windowmove', wid, '0', str(primary_height)],
+                                   capture_output=True, timeout=5)
+                    subprocess.run(['xdotool', 'windowsize', wid, '1920', '440'],
+                                   capture_output=True, timeout=5)
+                    subprocess.run(['xdotool', 'windowactivate', wid],
+                                   capture_output=True, timeout=5)
+                    time.sleep(1)
+                    subprocess.run(['xdotool', 'key', 'F11'],
+                                   capture_output=True, timeout=5)
+                    log("Browser positioned on tinyscreen (fullscreen)")
+            except Exception as e:
+                log(f"xdotool positioning failed: {e}")
+
+    mode_name = f"url ({url})" if url else "monitor"
+    log(f"EVDI {mode_name} mode active")
+
+    # Monitor bridge and browser
+    try:
+        while True:
+            if bridge.poll() is not None:
+                log("EVDI bridge died, restarting...")
+                bridge = subprocess.Popen(
+                    ['python3', bridge_script, '--fg', '--max-fps', str(fps)],
+                    stdout=open('/tmp/tinyscreen-evdi.log', 'a'),
+                    stderr=subprocess.STDOUT)
+                _child_procs.append(bridge)
+                time.sleep(5)
+                _configure_evdi_display()
+            if browser_proc and browser_proc.poll() is not None:
+                log("Browser died, restarting...")
+                browser_proc = subprocess.Popen([
+                    browser, '--no-first-run', '--no-sandbox', '--test-type',
+                    '--disable-session-crashed-bubble', '--noerrdialogs',
+                    '--disable-infobars', '--class=tinyscreen-display',
+                    '--window-size=1920,440',
+                    f'--window-position=0,{primary_height}',
+                    f'--app={url}'
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                _child_procs.append(browser_proc)
+            time.sleep(5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        bridge.terminate()
+        if browser_proc:
+            browser_proc.terminate()
 
 def write_pid():
     with open(PIDFILE, 'w') as f:
@@ -644,11 +863,21 @@ def mode_url(disp, url, quality, fps):
 
     import base64
 
-    # Use CDP Page.startScreencast for real-time 60fps frame streaming.
-    # Chromium pushes every rendered frame to us instead of us polling screenshots.
-    log(f"Starting CDP screencast (60fps real-time) -> USB display")
+    # Force viewport to exact display dimensions via CDP
     ws.send(_json.dumps({
         "id": 1,
+        "method": "Emulation.setDeviceMetricsOverride",
+        "params": {
+            "width": w, "height": h,
+            "deviceScaleFactor": 1, "mobile": False
+        }
+    }))
+    time.sleep(0.3)
+
+    # Use CDP Page.startScreencast for real-time 60fps frame streaming.
+    log(f"Starting CDP screencast (60fps real-time) -> USB display")
+    ws.send(_json.dumps({
+        "id": 2,
         "method": "Page.startScreencast",
         "params": {
             "format": "jpeg",
@@ -660,7 +889,10 @@ def mode_url(disp, url, quality, fps):
     }))
 
     frame_id = 0
-    msg_id = 100
+    msg_id = 10
+    frame_interval = 1.0 / fps
+    last_frame_time = 0.0
+    size_checked = False
 
     try:
         while True:
@@ -680,6 +912,23 @@ def mode_url(disp, url, quality, fps):
                     }))
                     msg_id += 1
 
+                    # Rate limit -- skip frames to hit target fps
+                    now = time.monotonic()
+                    if now - last_frame_time < frame_interval:
+                        continue
+                    last_frame_time = now
+
+                    # Check frame size once, then skip resize if it matches
+                    if not size_checked:
+                        img = Image.open(io.BytesIO(jpeg_data))
+                        if img.size != (w, h):
+                            log(f"CDP frame {img.size[0]}x{img.size[1]}, "
+                                f"resizing to {w}x{h}")
+                            img = img.resize((w, h), Image.LANCZOS)
+                            jpeg_data = image_to_jpeg(img, quality)
+                        else:
+                            size_checked = True
+
                     if not disp.send(jpeg_data):
                         disp.wait_for_device()
 
@@ -695,7 +944,12 @@ def mode_url(disp, url, quality, fps):
                     ws_url = tabs[0]['webSocketDebuggerUrl']
                     ws = _ws.create_connection(ws_url, timeout=5)
                     ws.send(_json.dumps({
-                        "id": 1, "method": "Page.startScreencast",
+                        "id": 1, "method": "Emulation.setDeviceMetricsOverride",
+                        "params": {"width": w, "height": h,
+                                   "deviceScaleFactor": 1, "mobile": False}
+                    }))
+                    ws.send(_json.dumps({
+                        "id": 2, "method": "Page.startScreencast",
                         "params": {"format": "jpeg", "quality": quality,
                                    "maxWidth": w, "maxHeight": h, "everyNthFrame": 1}
                     }))
@@ -947,10 +1201,12 @@ def main():
     group.add_argument('--pomodoro', action='store_true', help='Pomodoro focus timer')
     group.add_argument('--show', nargs='+', metavar='MODE',
                        help='Rotate through modes (use "all" for all, or list names)')
+    group.add_argument('--monitor', action='store_true',
+                       help='Virtual monitor mode (EVDI) - tinyscreen becomes a real display')
     group.add_argument('--test', action='store_true', help='Show test pattern')
     group.add_argument('--screenshot', nargs='?', const='/tmp/tinyscreen_screenshot.png',
                        metavar='FILE', help='Save screenshot of current URL render')
-    group.add_argument('--off', action='store_true', help='Stop running instance')
+    group.add_argument('--off', action='store_true', help='Stop running instance and blank display')
     group.add_argument('--status', action='store_true', help='Show status')
 
     parser.add_argument('--delay', type=int, default=30,
@@ -987,6 +1243,7 @@ def main():
     # --off
     if args.off:
         _stop_others()
+        _send_blank_frame()
         return
 
     # --status
@@ -1014,7 +1271,9 @@ def main():
     show_modes = None
     mode = target = None
 
-    if args.url:
+    if args.monitor:
+        mode, target = 'monitor', 'virtual display'
+    elif args.url:
         mode, target = 'url', args.url
     elif args.video:
         mode, target = 'video', args.video
@@ -1057,6 +1316,37 @@ def main():
             mode, target = 'sysmon', 'sysmon'
             print("No mode specified and no config.yml found, defaulting to --sysmon")
 
+    # EVDI modes: --monitor and --url (when EVDI is available)
+    # These bypass the normal Display class since the bridge handles USB directly.
+    if mode == 'monitor' or (mode == 'url' and _evdi_available()):
+        evdi_url = args.url if mode == 'url' else None
+        if not args.fg:
+            print(f"tinyscreen: {mode} -> {target}")
+            print(f"  Log:  tail -f {LOGFILE}")
+            print(f"  Stop: tinyscreen --off")
+            daemonize()
+        signal.signal(signal.SIGTERM, handle_sigterm)
+        write_pid()
+        log(f"tinyscreen starting ({mode}: {target})")
+        write_state(mode, target)
+        try:
+            mode_evdi(evdi_url, args.fps, args.fg)
+        except KeyboardInterrupt:
+            log("Interrupted.")
+        except Exception as e:
+            log(f"ERROR: {e}")
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+        finally:
+            cleanup_children()
+            for f in [PIDFILE, STATEFILE]:
+                try:
+                    os.unlink(f)
+                except (FileNotFoundError, PermissionError):
+                    pass
+            log("tinyscreen stopped.")
+        return
+
     if not args.fg:
         print(f"tinyscreen: {mode} -> {target}")
         print(f"  Log:  tail -f {LOGFILE}")
@@ -1078,6 +1368,8 @@ def main():
         if args.video:
             mode_video(disp, args.video, args.quality or 70, args.fps, args.loop)
         elif args.url:
+            # Fallback: EVDI not available, use CDP screencast (high CPU)
+            log("EVDI not available, falling back to CDP screencast mode")
             mode_url(disp, args.url, args.quality or 75, args.fps)
         elif args.image:
             mode_image(disp, args.image, args.quality or 85)
