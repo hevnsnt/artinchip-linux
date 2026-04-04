@@ -437,7 +437,7 @@ def render_frame(w=1920, h=440):
         lx += legend_font.getlength(state_name) + 24
 
     # --- Column header ---
-    col_header_y = legend_y + legend_h + 2
+    col_header_y = legend_y + legend_h + 8
     col_header_h = 24
     for row in range(col_header_h):
         t = row / max(col_header_h - 1, 1)
