@@ -111,7 +111,8 @@ def _draw_glow_dot(img, cx, cy, r, color):
     img.paste(sharp, (cx - r - pad, cy - r - pad), sharp)
 
 # ── Device type guessing ───────────────────────────────────────────
-_DEVICE_TYPES = {
+# MAC vendor keywords → (type, color)
+_VENDOR_TYPES = {
     'raspberry pi': ('Pi', PURPLE),
     'espressif': ('IoT', YELLOW),
     'sonos': ('Speaker', CYAN),
@@ -130,25 +131,114 @@ _DEVICE_TYPES = {
     'ai-link': ('IoT', YELLOW),
     'guangdong': ('Camera', RED),
     'china dragon': ('IoT', YELLOW),
+    'shenzhen': ('IoT', YELLOW),
+    'tuya': ('IoT', YELLOW),
+    'realtek': ('PC', ACCENT),
+    'dell': ('PC', ACCENT),
+    'hewlett': ('PC', ACCENT),
+    'lenovo': ('PC', ACCENT),
+    'asus': ('PC', ACCENT),
+    'microsoft': ('PC', ACCENT),
+    'netgear': ('Router', GREEN),
+    'ubiquiti': ('Router', GREEN),
+    'cisco': ('Router', GREEN),
+    'linksys': ('Router', GREEN),
+    'arris': ('Router', GREEN),
+    'huawei': ('Router', GREEN),
+    'synology': ('NAS', CYAN),
+    'qnap': ('NAS', CYAN),
+    'brother': ('Printer', PURPLE),
+    'canon': ('Printer', PURPLE),
+    'epson': ('Printer', PURPLE),
+    'lg electr': ('TV', ORANGE),
+    'vizio': ('TV', ORANGE),
+    'tcl': ('TV', ORANGE),
+    'hisense': ('TV', ORANGE),
+    'ecobee': ('Thermo', YELLOW),
+    'honeywell': ('Thermo', YELLOW),
+    'philips': ('IoT', YELLOW),
+    'lifx': ('IoT', YELLOW),
+    'wemo': ('IoT', YELLOW),
     'unknown': ('Device', TEXT_DIM),
 }
 
-def _guess_device(hostname, vendor):
-    """Guess device type from hostname and MAC vendor."""
+# Open port → device type hints
+_PORT_HINTS = {
+    22: 'SSH',        # Linux/server
+    53: 'DNS',        # Router/DNS server
+    80: 'HTTP',       # Web server/device
+    443: 'HTTPS',     # Web server/device
+    445: 'SMB',       # Windows/NAS
+    548: 'AFP',       # Mac file sharing
+    554: 'RTSP',      # Camera
+    631: 'Print',     # Printer (CUPS/IPP)
+    3389: 'RDP',      # Windows
+    5000: 'NAS',      # Synology DSM
+    5353: 'mDNS',     # Apple/Bonjour
+    8080: 'HTTP',     # Alt web server
+    8443: 'HTTPS',    # Alt HTTPS
+    8123: 'HA',       # Home Assistant
+    9100: 'Print',    # Raw printing
+    32400: 'Plex',    # Plex Media Server
+    62078: 'Apple',   # iPhone sync
+}
+
+def _guess_device(hostname, vendor, open_ports=None):
+    """Guess device type from hostname, MAC vendor, and open ports."""
     combined = f"{hostname} {vendor}".lower()
-    for keyword, (label, color) in _DEVICE_TYPES.items():
+
+    # Check vendor keywords first
+    for keyword, (label, color) in _VENDOR_TYPES.items():
         if keyword in combined:
             return label, color
-    # Check hostname patterns
-    if hostname and hostname != '':
-        if 'cam' in hostname.lower() or 'ipc' in hostname.lower():
+
+    # Hostname patterns
+    hn = (hostname or '').lower()
+    if 'cam' in hn or 'ipc' in hn:
+        return 'Camera', RED
+    if 'phone' in hn or 'iphone' in hn or 'ipad' in hn:
+        return 'Apple', TEXT_BRIGHT
+    if 'macbook' in hn or 'imac' in hn:
+        return 'Mac', TEXT_BRIGHT
+    if 'esp' in hn or 'tasmota' in hn or 'shelly' in hn:
+        return 'IoT', YELLOW
+    if 'printer' in hn or 'brother' in hn:
+        return 'Printer', PURPLE
+    if any(x in hn for x in ['nas', 'synology', 'diskstation']):
+        return 'NAS', CYAN
+    if any(x in hn for x in ['tv', 'roku', 'firetv', 'chromecast']):
+        return 'TV', ORANGE
+    if any(x in hn for x in ['xbox', 'playstation', 'switch']):
+        return 'Console', PURPLE
+
+    # Port-based inference
+    if open_ports:
+        ports = set(open_ports)
+        if 554 in ports:
             return 'Camera', RED
-        if 'phone' in hostname.lower() or 'iphone' in hostname.lower():
-            return 'Phone', PURPLE
-        if 'mac' in hostname.lower():
+        if 62078 in ports:
+            return 'Apple', TEXT_BRIGHT
+        if 3389 in ports:
+            return 'Windows', ACCENT
+        if 548 in ports:
             return 'Mac', TEXT_BRIGHT
-        if 'esp' in hostname.lower():
-            return 'IoT', YELLOW
+        if 445 in ports and 22 not in ports:
+            return 'Windows', ACCENT
+        if 5000 in ports or (445 in ports and 22 in ports):
+            return 'NAS', CYAN
+        if 631 in ports or 9100 in ports:
+            return 'Printer', PURPLE
+        if 8123 in ports:
+            return 'HA', GREEN
+        if 32400 in ports:
+            return 'Plex', PURPLE
+        if 22 in ports and 80 not in ports:
+            return 'Linux', ACCENT
+        if 22 in ports:
+            return 'Server', ACCENT
+        if 80 in ports or 443 in ports:
+            return 'Device', TEXT_DIM
+
     return 'Device', TEXT_DIM
 
 # ── Scan data ──────────────────────────────────────────────────────
@@ -170,16 +260,18 @@ GROUP_BY_TYPE = False  # set True to group hosts by device type
 
 # Group ordering (lower = shown first)
 _TYPE_ORDER = {
-    'Router': 0,
+    'Router': 0, 'DNS': 0,
     'Apple': 1, 'Mac': 1, 'Phone': 1,
-    'PC': 2, 'GPU/PC': 2,
+    'PC': 2, 'GPU/PC': 2, 'Windows': 2, 'Linux': 2,
     'Pi': 3,
-    'Device': 4, 'Samsung': 4,
-    'Google': 5, 'Nest': 5,
-    'Roku': 6,
-    'IoT': 7, 'Wyze': 7, 'TP-Link': 7, 'Espressif': 7,
-    'Speaker': 8, 'Echo': 8, 'Sonos': 8,
-    'Camera': 9, 'Ring': 9,
+    'Server': 4, 'NAS': 4, 'Plex': 4, 'HA': 4,
+    'Device': 5, 'Samsung': 5,
+    'Google': 6, 'Nest': 6,
+    'Roku': 7, 'TV': 7, 'Console': 7,
+    'IoT': 8, 'Wyze': 8, 'TP-Link': 8, 'Thermo': 8,
+    'Speaker': 9, 'Echo': 9, 'Sonos': 9,
+    'Camera': 10, 'Ring': 10,
+    'Printer': 11,
 }
 
 
@@ -198,6 +290,37 @@ def _detect_subnet():
     except Exception:
         pass
     return '192.168.1.0/24'
+
+
+def _apply_port_results(hosts, port_output):
+    """Parse nmap port scan output and update host types based on open ports."""
+    # Build IP → open ports mapping
+    ip_ports = {}
+    current_ip = None
+    for line in port_output.splitlines():
+        if line.startswith('Nmap scan report for'):
+            match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
+            if match:
+                current_ip = match.group(1)
+                ip_ports[current_ip] = []
+        elif current_ip and '/tcp' in line and 'open' in line:
+            try:
+                port = int(line.split('/')[0])
+                ip_ports[current_ip].append(port)
+            except ValueError:
+                pass
+
+    # Re-evaluate device types with port info
+    for host in hosts:
+        ports = ip_ports.get(host['ip'], [])
+        if ports:
+            host['ports'] = ports
+            # Re-guess with port data (only upgrade, don't downgrade known types)
+            if host['type'] == 'Device':
+                new_type, new_color = _guess_device(
+                    host['hostname'], host['vendor'], open_ports=ports)
+                host['type'] = new_type
+                host['color'] = new_color
 
 
 def _parse_nmap_output(output):
@@ -241,9 +364,10 @@ def _parse_nmap_output(output):
 
 
 def _do_scan():
-    """Background scan worker."""
+    """Background scan worker. Quick ping scan first, then port probe for identification."""
     subnet = _cache['subnet']
     try:
+        # Phase 1: fast ping scan to discover hosts
         result = subprocess.run(
             ['nmap', '-sn', subnet, '--host-timeout', '3s'],
             capture_output=True, text=True, timeout=30
@@ -254,6 +378,22 @@ def _do_scan():
             return
 
         hosts = _parse_nmap_output(result.stdout)
+
+        # Phase 2: quick port probe on discovered hosts for better identification
+        # Only probe key ports, with tight timeouts
+        probe_ports = '22,53,80,443,445,548,554,631,3389,5000,5353,8080,8123,9100,32400,62078'
+        ips = ' '.join(h['ip'] for h in hosts)
+        if ips:
+            try:
+                port_result = subprocess.run(
+                    ['nmap', '-sT', '-p', probe_ports, '--host-timeout', '2s',
+                     '--max-retries', '1', '-T4', '--open'] + [h['ip'] for h in hosts],
+                    capture_output=True, text=True, timeout=45
+                )
+                if port_result.returncode == 0:
+                    _apply_port_results(hosts, port_result.stdout)
+            except Exception:
+                pass  # port scan is best-effort, don't fail the whole scan
         hosts.sort(key=lambda h: tuple(int(o) for o in h['ip'].split('.')))
 
         # Detect new devices
