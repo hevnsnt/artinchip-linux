@@ -204,9 +204,12 @@ def render_frame(w=1920, h=440):
         col.advance()
         col.draw(draw, f)
 
-    # --- Phosphor bloom — makes the rain glow ---
+    # --- Dim rain to background level ---
+    img = ImageEnhance.Brightness(img).enhance(0.55)
+
+    # --- Subtle phosphor bloom ---
     bloom = img.filter(ImageFilter.GaussianBlur(radius=4))
-    bloom = ImageEnhance.Brightness(bloom).enhance(0.6)
+    bloom = ImageEnhance.Brightness(bloom).enhance(0.35)
     img = ImageChops.add(img, bloom)
 
     # --- Bottom reflection (subtle) ---
