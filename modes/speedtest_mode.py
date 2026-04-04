@@ -1,15 +1,17 @@
 """Internet speed test dashboard for tinyscreen bar display.
 
-Runs periodic speed tests via speedtest-cli in the background.
-Shows download/upload/ping with historical sparklines.
+Animated particle streams during testing, dramatic arc gauge results.
+Real-time speed readout via speedtest-cli callbacks.
 
 Requires: pip install speedtest-cli
 """
 
+import math
 import os
+import random
 import time
 import threading
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageChops
 
 # ── Colors ─────────────────────────────────────────────────────────
 BG          = (5, 7, 12)
@@ -23,9 +25,9 @@ YELLOW      = (255, 225, 0)
 ORANGE      = (255, 165, 30)
 CYAN        = (0, 240, 255)
 PURPLE      = (160, 110, 255)
-DL_COLOR    = (0, 220, 255)   # download = cyan-blue
-UL_COLOR    = (160, 80, 255)  # upload = purple
-PING_COLOR  = (0, 255, 160)   # ping = green
+DL_COLOR    = (0, 220, 255)
+UL_COLOR    = (180, 80, 255)
+PING_COLOR  = (0, 255, 160)
 
 _fonts = {}
 def font(size):
@@ -40,7 +42,7 @@ def font(size):
         _fonts[size] = ImageFont.load_default()
     return _fonts[size]
 
-def _lerp_color(c1, c2, t):
+def _lerp(c1, c2, t):
     t = max(0.0, min(1.0, t))
     return tuple(int(a + (b - a) * t) for a, b in zip(c1, c2))
 
@@ -52,15 +54,8 @@ def _get_bg(w, h):
         draw = ImageDraw.Draw(img)
         for y in range(h):
             t = y / max(h - 1, 1)
-            c = _lerp_color((8, 12, 22), (3, 5, 10), t)
+            c = _lerp((6, 10, 18), (2, 4, 8), t)
             draw.line([(0, y), (w, y)], fill=c)
-        for gx in range(0, w, 60):
-            draw.line([(gx, 0), (gx, h)], fill=(15, 20, 32, 35))
-        for gy in range(0, h, 40):
-            draw.line([(0, gy), (w, gy)], fill=(15, 20, 32, 35))
-        for i in range(60):
-            a = int(25 * (1.0 - i / 60))
-            draw.line([(0, h-1-i), (w, h-1-i)], fill=(0, 80, 160, a))
         vig = Image.new('RGBA', (w, h), (0, 0, 0, 0))
         vd = ImageDraw.Draw(vig)
         for i in range(50):
@@ -90,117 +85,126 @@ def _hero(draw, img, x, y, text, color, size):
     bbox = f.getbbox(text)
     tw = bbox[2] - bbox[0] + 20
     th = bbox[3] - bbox[1] + 20
-    pad = 12
+    pad = 14
     glow = Image.new('RGBA', (tw + pad*2, th + pad*2), (0,0,0,0))
     gd = ImageDraw.Draw(glow)
-    gd.text((pad - bbox[0], pad - bbox[1]), text, fill=color+(110,), font=f)
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=8))
+    gd.text((pad - bbox[0], pad - bbox[1]), text, fill=color+(120,), font=f)
+    glow = glow.filter(ImageFilter.GaussianBlur(radius=10))
     img.paste(glow, (x - pad, y - pad), glow)
     draw.text((x, y), text, fill=color, font=f)
 
-def _draw_sparkline(draw, img, x, y, w, h, data, color, filled=True):
-    if not data or len(data) < 2:
-        draw.rectangle([x, y, x + w, y + h], fill=(6, 8, 14))
-        return
-    draw.rectangle([x, y, x + w, y + h], fill=(6, 8, 14))
-    mx = max(data) or 1
-    points = []
-    for i, val in enumerate(data):
-        px = x + int(i * w / (len(data) - 1))
-        py = y + h - int(min(val, mx) * h / mx)
-        points.append((px, py))
-    if filled:
-        for i in range(len(points) - 1):
-            x1, y1 = points[i]
-            x2, y2 = points[i + 1]
-            for px in range(x1, x2 + 1):
-                t = (px - x) / max(w, 1)
-                col = _lerp_color(tuple(max(0, c - 120) for c in color),
-                                  tuple(max(0, c - 60) for c in color), t)
-                frac = (px - x1) / max(x2 - x1, 1)
-                py_interp = int(y1 + (y2 - y1) * frac)
-                draw.line([(px, py_interp), (px, y + h)], fill=col)
-    # Glow
-    pad = 8
-    gw, gh = w + pad*2, h + pad*2
-    glow = Image.new('RGBA', (gw, gh), (0,0,0,0))
-    gd = ImageDraw.Draw(glow)
-    shifted = [(px - x + pad, py - y + pad) for px, py in points]
-    gd.line(shifted, fill=color+(150,), width=5)
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=6))
-    img.paste(glow, (x - pad, y - pad), glow)
-    draw.line(points, fill=tuple(min(255, c + 40) for c in color), width=2)
+def _draw_arc(draw, img, cx, cy, radius, thickness, pct, color, bg_color=(20, 25, 38)):
+    bbox = [cx - radius, cy - radius, cx + radius, cy + radius]
+    draw.arc(bbox, 135, 405, fill=bg_color, width=thickness)
+    if pct > 0:
+        end = 135 + int(270 * min(pct, 100) / 100)
+        gpad = 28
+        gsize = radius * 2 + gpad * 2
+        # Wide glow
+        glow = Image.new('RGBA', (gsize, gsize), (0,0,0,0))
+        gd = ImageDraw.Draw(glow)
+        gb = [gpad, gpad, gpad + radius*2, gpad + radius*2]
+        gd.arc(gb, 135, end, fill=color+(70,), width=thickness+14)
+        glow = glow.filter(ImageFilter.GaussianBlur(radius=10))
+        img.paste(glow, (cx-radius-gpad, cy-radius-gpad), glow)
+        # Core glow
+        glow2 = Image.new('RGBA', (gsize, gsize), (0,0,0,0))
+        gd2 = ImageDraw.Draw(glow2)
+        gd2.arc(gb, 135, end, fill=color+(180,), width=thickness+3)
+        glow2 = glow2.filter(ImageFilter.GaussianBlur(radius=4))
+        img.paste(glow2, (cx-radius-gpad, cy-radius-gpad), glow2)
+        # Sharp arc
+        draw.arc(bbox, 135, end, fill=color, width=thickness)
+        # Glowing tip
+        angle_rad = math.radians(end)
+        tip_x = cx + int(radius * math.cos(angle_rad))
+        tip_y = cy + int(radius * math.sin(angle_rad))
+        bright = tuple(min(255, c + 80) for c in color)
+        draw.ellipse([tip_x-4, tip_y-4, tip_x+4, tip_y+4], fill=bright)
 
-def _draw_glow_bar(draw, img, x, y, w, h, pct, color):
-    draw.rectangle([x, y, x + w, y + h], fill=(12, 15, 22))
-    fill_w = max(0, int(w * min(pct, 100.0) / 100.0))
-    if fill_w <= 0:
-        return
-    pad = 10
-    gw, gh = fill_w + pad*2, h + pad*2
-    glow = Image.new('RGBA', (gw, gh), (0,0,0,0))
-    gd = ImageDraw.Draw(glow)
-    gd.rectangle([pad, pad, pad + fill_w, pad + h], fill=color+(100,))
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=8))
-    img.paste(glow, (x - pad, y - pad), glow)
-    for col in range(fill_w):
-        t = col / max(fill_w - 1, 1)
-        c = _lerp_color(tuple(max(0, v - 80) for v in color), color, t * 0.8 + 0.2)
-        draw.line([(x+1+col, y+1), (x+1+col, y+h-1)], fill=c)
-    tip_w = min(4, fill_w)
-    bright = tuple(min(255, c + 60) for c in color)
-    draw.rectangle([x + fill_w - tip_w, y, x + fill_w, y + h], fill=bright)
+# ── Particle system ────────────────────────────────────────────────
+class _Particles:
+    def __init__(self, count, w, h):
+        self.w = w
+        self.h = h
+        self.n = count
+        self.x = [random.uniform(0, w) for _ in range(count)]
+        self.y = [random.uniform(0, h) for _ in range(count)]
+        self.speed = [random.uniform(2, 8) for _ in range(count)]
+        self.size = [random.uniform(1, 3) for _ in range(count)]
+        self.alpha = [random.randint(40, 180) for _ in range(count)]
+        self.depth = [random.uniform(0.3, 1.0) for _ in range(count)]
+
+    def update(self, direction, speed_mult):
+        for i in range(self.n):
+            s = self.speed[i] * speed_mult * self.depth[i]
+            if direction == 'right':
+                self.x[i] += s
+                if self.x[i] > self.w:
+                    self.x[i] = 0
+                    self.y[i] = random.uniform(0, self.h)
+            else:
+                self.x[i] -= s
+                if self.x[i] < 0:
+                    self.x[i] = self.w
+                    self.y[i] = random.uniform(0, self.h)
+
+    def draw(self, draw_ctx, color):
+        for i in range(self.n):
+            d = self.depth[i]
+            sz = self.size[i] * d
+            a = int(self.alpha[i] * d)
+            c = tuple(int(v * d) for v in color) + (a,)
+            x, y = int(self.x[i]), int(self.y[i])
+            if sz < 1.5:
+                draw_ctx.point((x, y), fill=c)
+            else:
+                r = int(sz)
+                draw_ctx.ellipse([x-r, y-r, x+r, y+r], fill=c)
+
+_particles = None
 
 # ── State ──────────────────────────────────────────────────────────
 _cache = {
-    'download': 0,      # Mbps
-    'upload': 0,        # Mbps
-    'ping': 0,          # ms
-    'server': '',       # server name
-    'isp': '',
-    'dl_history': [],   # list of download speeds
-    'ul_history': [],   # list of upload speeds
-    'ping_history': [], # list of ping times
-    'last_test': 0,
-    'testing': False,
-    'phase': '',        # 'server', 'download', 'upload', 'done'
-    'progress': 0,      # 0-100 for current phase
-    'error': None,
-    'test_count': 0,
+    'download': 0, 'upload': 0, 'ping': 0,
+    'server': '', 'isp': '',
+    'dl_history': [], 'ul_history': [], 'ping_history': [],
+    'last_test': 0, 'testing': False,
+    'phase': '', 'live_speed': 0,
+    'error': None, 'test_count': 0,
 }
 
-TEST_INTERVAL = 15 * 60  # 15 minutes between tests
+TEST_INTERVAL = 15 * 60
 
+def _test_callback(current, total, **kwargs):
+    """Callback just to track that we're actively testing."""
+    _cache['live_speed'] = -1  # signals "active"
 
 def _do_test():
-    """Run speed test in background."""
     try:
-        import speedtest
+        import speedtest as st_lib
         _cache['phase'] = 'server'
-        _cache['progress'] = 0
+        _cache['live_speed'] = 0
 
-        st = speedtest.Speedtest()
-        st.get_best_server()
-        _cache['server'] = f"{st.best['sponsor']} ({st.best['name']})"
-        _cache['ping'] = st.best['latency']
+        s = st_lib.Speedtest()
+        s.get_best_server()
+        _cache['server'] = f"{s.best['sponsor']} ({s.best['name']})"
+        _cache['ping'] = s.best['latency']
 
         _cache['phase'] = 'download'
-        _cache['progress'] = 0
-        st.download()
-        _cache['download'] = st.results.download / 1_000_000
+        _cache['live_speed'] = 0
+        s.download(callback=_test_callback)
+        _cache['download'] = s.results.download / 1_000_000
 
         _cache['phase'] = 'upload'
-        _cache['progress'] = 0
-        st.upload()
-        _cache['upload'] = st.results.upload / 1_000_000
+        _cache['live_speed'] = 0
+        s.upload(callback=_test_callback)
+        _cache['upload'] = s.results.upload / 1_000_000
 
-        _cache['isp'] = st.results.client.get('isp', '')
-
-        # Store history
+        _cache['isp'] = s.results.client.get('isp', '')
         _cache['dl_history'].append(_cache['download'])
         _cache['ul_history'].append(_cache['upload'])
         _cache['ping_history'].append(_cache['ping'])
-        # Keep last 24 results
         for k in ('dl_history', 'ul_history', 'ping_history'):
             if len(_cache[k]) > 24:
                 _cache[k] = _cache[k][-24:]
@@ -208,15 +212,13 @@ def _do_test():
         _cache['phase'] = 'done'
         _cache['test_count'] += 1
         _cache['error'] = None
-
     except ImportError:
-        _cache['error'] = 'speedtest-cli not installed (pip install speedtest-cli)'
+        _cache['error'] = 'pip install speedtest-cli'
     except Exception as e:
         _cache['error'] = str(e)[:80]
     finally:
         _cache['testing'] = False
         _cache['last_test'] = time.time()
-
 
 def _run_test():
     now = time.time()
@@ -227,7 +229,6 @@ def _run_test():
     _cache['testing'] = True
     threading.Thread(target=_do_test, daemon=True).start()
 
-
 def init():
     _cache['last_test'] = 0
     _cache['test_count'] = 0
@@ -236,120 +237,173 @@ def init():
     _cache['ping_history'] = []
     _run_test()
 
-
 # ── Render ─────────────────────────────────────────────────────────
 def render_frame(w=1920, h=440):
+    global _particles
     _run_test()
+
+    if _particles is None:
+        _particles = _Particles(200, w, h)
+
     img = _get_bg(w, h)
     draw = ImageDraw.Draw(img)
 
-    # ── Testing in progress ──
-    if _cache['testing'] or (_cache['test_count'] == 0 and not _cache['error']):
-        draw.text((30, 15), "SPEED TEST", fill=ACCENT, font=font(28))
+    phase = _cache['phase']
+    testing = _cache['testing'] or (_cache['test_count'] == 0 and not _cache['error'])
 
-        phase = _cache['phase']
-        if phase == 'server':
-            msg = "Finding best server..."
-            pct = 15
-        elif phase == 'download':
-            msg = "Testing download speed..."
-            pct = 45
+    # ══════════════════════════════════════════════════════════════
+    # TESTING STATE — animated particles + live speed
+    # ══════════════════════════════════════════════════════════════
+    if testing:
+        # Determine particle direction and color
+        if phase == 'download':
+            direction = 'right'
+            color = DL_COLOR
+            label = "DOWNLOADING"
+            speed_mult = max(2, _cache['live_speed'] / 5)
         elif phase == 'upload':
-            msg = "Testing upload speed..."
-            pct = 75
+            direction = 'left'
+            color = UL_COLOR
+            label = "UPLOADING"
+            speed_mult = max(2, _cache['live_speed'] / 5)
         else:
-            msg = "Connecting..."
-            pct = 5
+            direction = 'right'
+            color = ACCENT
+            label = "FINDING SERVER" if phase == 'server' else "CONNECTING"
+            speed_mult = 3
+
+        # Update and draw particles
+        _particles.update(direction, speed_mult)
+        _particles.draw(draw, color)
+
+        # Bloom on the particles
+        bloom = img.convert('RGB').filter(ImageFilter.GaussianBlur(radius=4))
+        from PIL import ImageEnhance
+        bloom = ImageEnhance.Brightness(bloom).enhance(0.4)
+        img_rgb = img.convert('RGB')
+        img_rgb = ImageChops.add(img_rgb, bloom)
+        img = img_rgb.convert('RGBA')
+        draw = ImageDraw.Draw(img)
+
+        # Phase label — large, centered top
+        f = font(36)
+        tw = f.getlength(label)
+        _hero(draw, img, int((w - tw) / 2), 20, label, color, 36)
+        draw = ImageDraw.Draw(img)
 
         # Animated dots
-        dots = '.' * (int(time.time() * 2) % 4)
-        draw.text((w // 2 - 180, h // 2 - 40), msg + dots, fill=TEXT_BRIGHT, font=font(30))
+        dots = '·' * (int(time.time() * 3) % 4 + 1)
+        draw.text((int((w + tw) / 2) + 20, 28), dots, fill=color, font=font(30))
 
-        # Progress bar
-        bar_w = w - 200
-        bar_x = 100
-        bar_y = h // 2 + 20
-        _draw_glow_bar(draw, img, bar_x, bar_y, bar_w, 20, pct,
-                       DL_COLOR if phase == 'download' else
-                       UL_COLOR if phase == 'upload' else ACCENT)
-        draw = ImageDraw.Draw(img)
-        draw.text((bar_x + bar_w + 10, bar_y), f"{pct}%", fill=TEXT, font=font(18))
+        # Pulsing speed indicator in center
+        pulse = 0.7 + 0.3 * math.sin(time.time() * 4)
+        pulse_color = tuple(int(c * pulse) for c in color)
+        if phase in ('download', 'upload'):
+            # Animated measuring bars
+            t = time.time()
+            for bar_i in range(8):
+                bar_x = w // 2 - 200 + bar_i * 55
+                bar_max_h = 120
+                bar_h2 = int(bar_max_h * (0.3 + 0.7 * abs(math.sin(t * 3 + bar_i * 0.8))))
+                bar_y2 = h // 2 + 40 - bar_h2
+                bar_c = _lerp(color, tuple(min(255, c + 60) for c in color),
+                              abs(math.sin(t * 3 + bar_i * 0.8)))
+                draw.rectangle([bar_x, bar_y2, bar_x + 35, h // 2 + 40],
+                              fill=tuple(max(0, c - 80) for c in bar_c))
+                draw.rectangle([bar_x, bar_y2, bar_x + 35, bar_y2 + 3], fill=bar_c)
+        else:
+            # Server search — spinning dots
+            cx, cy = w // 2, h // 2
+            t = time.time()
+            for dot_i in range(8):
+                angle = t * 2 + dot_i * math.pi / 4
+                dx = cx + int(60 * math.cos(angle))
+                dy = cy + int(60 * math.sin(angle))
+                a = int(255 * (0.3 + 0.7 * ((dot_i / 8 + t * 0.5) % 1.0)))
+                dot_c = color + (a,)
+                draw.ellipse([dx-4, dy-4, dx+4, dy+4], fill=dot_c)
 
-        # Show partial results as they come in
+        # Already-measured values at bottom
+        by = h - 60
         if _cache['ping'] > 0:
-            draw.text((30, h - 50), f"Ping: {_cache['ping']:.0f}ms", fill=PING_COLOR, font=font(22))
+            draw.text((40, by), "PING", fill=PING_COLOR, font=font(16))
+            draw.text((40, by + 20), f"{_cache['ping']:.0f}ms", fill=PING_COLOR, font=font(28))
         if _cache['download'] > 0 and phase != 'download':
-            draw.text((300, h - 50), f"Download: {_cache['download']:.1f} Mbps",
-                      fill=DL_COLOR, font=font(22))
+            draw.text((300, by), "DOWNLOAD", fill=DL_COLOR, font=font(16))
+            draw.text((300, by + 20), f"{_cache['download']:.1f} Mbps", fill=DL_COLOR, font=font(28))
         if _cache['server']:
-            draw.text((30, h - 25), _cache['server'], fill=TEXT_DIM, font=font(16))
+            draw.text((w - 500, by + 10), _cache['server'], fill=TEXT_DIM, font=font(16))
 
         img = Image.alpha_composite(img, _get_scanlines(w, h))
         out = Image.new('RGB', (w, h), BG)
         out.paste(img, (0, 0), img)
         return out
 
-    # ── Error state ──
+    # ══════════════════════════════════════════════════════════════
+    # ERROR
+    # ══════════════════════════════════════════════════════════════
     if _cache['error'] and _cache['test_count'] == 0:
-        draw.text((30, 20), "SPEED TEST", fill=ACCENT, font=font(28))
+        draw.text((30, 20), "SPEED TEST", fill=ACCENT, font=font(30))
         draw.text((30, 70), f"Error: {_cache['error']}", fill=RED, font=font(22))
         img = Image.alpha_composite(img, _get_scanlines(w, h))
         out = Image.new('RGB', (w, h), BG)
         out.paste(img, (0, 0), img)
         return out
 
-    # ═══════════════════════════════════════════════════════════════
-    # RESULTS DASHBOARD
-    # ═══════════════════════════════════════════════════════════════
-
+    # ══════════════════════════════════════════════════════════════
+    # RESULTS — dramatic arc gauges + history
+    # ══════════════════════════════════════════════════════════════
     dl = _cache['download']
     ul = _cache['upload']
     ping = _cache['ping']
 
-    # ── Top: Hero metrics ──
-    draw.text((30, 6), "SPEED TEST", fill=ACCENT, font=font(22))
+    # Gentle ambient particles (slow, dim)
+    _particles.update('right', 1.5)
+    for i in range(_particles.n):
+        _particles.alpha[i] = min(_particles.alpha[i], 40)
+    _particles.draw(draw, (20, 40, 60))
+    for i in range(_particles.n):
+        _particles.alpha[i] = random.randint(40, 180)
 
-    # Time since last test
-    ago = int(time.time() - _cache['last_test'])
-    if ago < 60:
-        ago_str = f"{ago}s ago"
-    elif ago < 3600:
-        ago_str = f"{ago // 60}m ago"
-    else:
-        ago_str = f"{ago // 3600}h ago"
-    draw.text((200, 10), ago_str, fill=TEXT_DIM, font=font(16))
+    # ── Download arc gauge (left) ──
+    max_speed = 200  # scale: 0-200 Mbps
+    dl_pct = min(dl / max_speed * 100, 100)
+    gauge_r = 130
+    gauge_cx = 220
+    gauge_cy = h // 2 + 20
 
-    # Server + ISP
-    if _cache['server']:
-        draw.text((320, 10), _cache['server'], fill=TEXT_DIM, font=font(16))
-
-    # DOWNLOAD — massive
-    dx = 30
-    draw.text((dx, 38), "DOWNLOAD", fill=DL_COLOR, font=font(18))
-    _hero(draw, img, dx, 62, f"{dl:.1f}", DL_COLOR, 70)
+    _draw_arc(draw, img, gauge_cx, gauge_cy, gauge_r, 14, dl_pct, DL_COLOR)
     draw = ImageDraw.Draw(img)
-    draw.text((dx + font(70).getlength(f"{dl:.1f}") + 10, 90), "Mbps",
-              fill=DL_COLOR, font=font(24))
 
-    # UPLOAD — massive
-    ux = 420
-    draw.text((ux, 38), "UPLOAD", fill=UL_COLOR, font=font(18))
-    _hero(draw, img, ux, 62, f"{ul:.1f}", UL_COLOR, 70)
+    # Speed inside arc
+    _hero(draw, img, gauge_cx - 80, gauge_cy - 50, f"{dl:.1f}", DL_COLOR, 64)
     draw = ImageDraw.Draw(img)
-    draw.text((ux + font(70).getlength(f"{ul:.1f}") + 10, 90), "Mbps",
-              fill=UL_COLOR, font=font(24))
+    draw.text((gauge_cx - 28, gauge_cy + 20), "Mbps", fill=DL_COLOR, font=font(20))
+    draw.text((gauge_cx - 48, gauge_cy - 85), "DOWNLOAD", fill=TEXT, font=font(18))
 
-    # PING
-    px_start = 780
-    draw.text((px_start, 38), "PING", fill=PING_COLOR, font=font(18))
+    # ── Upload arc gauge (center-left) ──
+    ul_pct = min(ul / max_speed * 100, 100)
+    gauge2_cx = 560
+    gauge2_r = 100
+
+    _draw_arc(draw, img, gauge2_cx, gauge_cy + 10, gauge2_r, 12, ul_pct, UL_COLOR)
+    draw = ImageDraw.Draw(img)
+
+    _hero(draw, img, gauge2_cx - 60, gauge_cy - 30, f"{ul:.1f}", UL_COLOR, 48)
+    draw = ImageDraw.Draw(img)
+    draw.text((gauge2_cx - 22, gauge_cy + 20), "Mbps", fill=UL_COLOR, font=font(18))
+    draw.text((gauge2_cx - 35, gauge_cy - 65), "UPLOAD", fill=TEXT, font=font(18))
+
+    # ── Ping + Rating (center-right) ──
+    px = 780
+    draw.text((px, 30), "PING", fill=TEXT, font=font(20))
     ping_color = GREEN if ping < 30 else YELLOW if ping < 80 else RED
-    _hero(draw, img, px_start, 62, f"{ping:.0f}", ping_color, 70)
+    _hero(draw, img, px, 56, f"{ping:.0f}", ping_color, 60)
     draw = ImageDraw.Draw(img)
-    draw.text((px_start + font(70).getlength(f"{ping:.0f}") + 10, 90), "ms",
-              fill=ping_color, font=font(24))
+    draw.text((px + font(60).getlength(f"{ping:.0f}") + 8, 82), "ms",
+              fill=ping_color, font=font(22))
 
-    # Speed rating
-    rx = 1050
+    # Rating
     if dl >= 100:
         rating, r_color = "EXCELLENT", GREEN
     elif dl >= 50:
@@ -360,59 +414,97 @@ def render_frame(w=1920, h=440):
         rating, r_color = "SLOW", ORANGE
     else:
         rating, r_color = "POOR", RED
-    draw.text((rx, 38), "RATING", fill=TEXT, font=font(18))
-    _hero(draw, img, rx, 62, rating, r_color, 50)
+
+    draw.text((px, 140), "RATING", fill=TEXT, font=font(20))
+    _hero(draw, img, px, 168, rating, r_color, 48)
     draw = ImageDraw.Draw(img)
 
-    # Next test countdown
-    next_test = max(0, TEST_INTERVAL - (time.time() - _cache['last_test']))
-    next_min = int(next_test // 60)
-    draw.text((rx + 300, 50), "NEXT TEST", fill=TEXT_DIM, font=font(16))
-    draw.text((rx + 300, 72), f"{next_min}m", fill=TEXT, font=font(36))
+    # Server info
+    draw.text((px, 230), "SERVER", fill=TEXT_DIM, font=font(14))
+    draw.text((px, 248), _cache['server'][:35], fill=TEXT, font=font(16))
+    if _cache['isp']:
+        draw.text((px, 272), _cache['isp'][:35], fill=TEXT_DIM, font=font(14))
 
-    # ── Accent line ──
-    line_y = 145
-    glow_line = Image.new('RGBA', (w, 10), (0,0,0,0))
-    gld = ImageDraw.Draw(glow_line)
-    gld.rectangle([0, 3, w, 5], fill=ACCENT + (120,))
-    glow_line = glow_line.filter(ImageFilter.GaussianBlur(radius=3))
-    img.paste(glow_line, (0, line_y), glow_line)
-    draw = ImageDraw.Draw(img)
+    # Next test
+    next_s = max(0, TEST_INTERVAL - (time.time() - _cache['last_test']))
+    draw.text((px, 310), "NEXT TEST", fill=TEXT_DIM, font=font(14))
+    draw.text((px, 328), f"{int(next_s // 60)}m {int(next_s % 60)}s", fill=TEXT, font=font(20))
 
-    # ── Middle: Download + Upload sparklines (side by side) ──
-    spark_y = line_y + 14
-    spark_h = 150
-    half_w = (w - 80) // 2
+    # ── History sparklines (right side) ──
+    sp_x = 1050
+    sp_w = w - sp_x - 30
 
     # Download history
-    draw.text((30, spark_y - 2), "DOWNLOAD HISTORY", fill=DL_COLOR, font=font(14))
+    draw.text((sp_x, 20), "DOWNLOAD HISTORY", fill=DL_COLOR, font=font(16))
     if _cache['dl_history']:
-        avg_dl = sum(_cache['dl_history']) / len(_cache['dl_history'])
-        draw.text((250, spark_y - 2), f"avg {avg_dl:.1f} Mbps", fill=TEXT_DIM, font=font(14))
-    _draw_sparkline(draw, img, 30, spark_y + 16, half_w, spark_h,
-                    _cache['dl_history'], DL_COLOR)
-    draw = ImageDraw.Draw(img)
+        avg = sum(_cache['dl_history']) / len(_cache['dl_history'])
+        draw.text((sp_x + 250, 20), f"avg {avg:.1f}", fill=TEXT_DIM, font=font(14))
+
+    sp_y = 40
+    sp_h = 100
+    dl_data = _cache['dl_history']
+    if dl_data and len(dl_data) >= 2:
+        draw.rectangle([sp_x, sp_y, sp_x + sp_w, sp_y + sp_h], fill=(6, 8, 14))
+        mx = max(dl_data) or 1
+        pts = []
+        for i, v in enumerate(dl_data):
+            px2 = sp_x + int(i * sp_w / (len(dl_data) - 1))
+            py2 = sp_y + sp_h - int(min(v, mx) * sp_h / mx)
+            pts.append((px2, py2))
+        fill_pts = pts + [(sp_x + sp_w, sp_y + sp_h), (sp_x, sp_y + sp_h)]
+        draw.polygon(fill_pts, fill=(0, 30, 50))
+        # Glow
+        gpad = 6
+        glow = Image.new('RGBA', (sp_w + gpad*2, sp_h + gpad*2), (0,0,0,0))
+        gd = ImageDraw.Draw(glow)
+        shifted = [(p[0] - sp_x + gpad, p[1] - sp_y + gpad) for p in pts]
+        gd.line(shifted, fill=DL_COLOR+(140,), width=4)
+        glow = glow.filter(ImageFilter.GaussianBlur(radius=5))
+        img.paste(glow, (sp_x - gpad, sp_y - gpad), glow)
+        draw = ImageDraw.Draw(img)
+        draw.line(pts, fill=DL_COLOR, width=2)
+    else:
+        draw.rectangle([sp_x, sp_y, sp_x + sp_w, sp_y + sp_h], fill=(6, 8, 14))
+        draw.text((sp_x + sp_w//2 - 50, sp_y + sp_h//2 - 8), "1 test", fill=TEXT_DIM, font=font(16))
 
     # Upload history
-    ul_x = 30 + half_w + 20
-    draw.text((ul_x, spark_y - 2), "UPLOAD HISTORY", fill=UL_COLOR, font=font(14))
-    if _cache['ul_history']:
-        avg_ul = sum(_cache['ul_history']) / len(_cache['ul_history'])
-        draw.text((ul_x + 220, spark_y - 2), f"avg {avg_ul:.1f} Mbps", fill=TEXT_DIM, font=font(14))
-    _draw_sparkline(draw, img, ul_x, spark_y + 16, half_w, spark_h,
-                    _cache['ul_history'], UL_COLOR)
-    draw = ImageDraw.Draw(img)
+    sp_y2 = sp_y + sp_h + 20
+    draw.text((sp_x, sp_y2 - 16), "UPLOAD HISTORY", fill=UL_COLOR, font=font(16))
+    ul_data = _cache['ul_history']
+    if ul_data and len(ul_data) >= 2:
+        draw.rectangle([sp_x, sp_y2, sp_x + sp_w, sp_y2 + sp_h], fill=(6, 8, 14))
+        mx = max(ul_data) or 1
+        pts = []
+        for i, v in enumerate(ul_data):
+            px2 = sp_x + int(i * sp_w / (len(ul_data) - 1))
+            py2 = sp_y2 + sp_h - int(min(v, mx) * sp_h / mx)
+            pts.append((px2, py2))
+        fill_pts = pts + [(sp_x + sp_w, sp_y2 + sp_h), (sp_x, sp_y2 + sp_h)]
+        draw.polygon(fill_pts, fill=(25, 10, 45))
+        glow = Image.new('RGBA', (sp_w + 12, sp_h + 12), (0,0,0,0))
+        gd = ImageDraw.Draw(glow)
+        shifted = [(p[0] - sp_x + 6, p[1] - sp_y2 + 6) for p in pts]
+        gd.line(shifted, fill=UL_COLOR+(140,), width=4)
+        glow = glow.filter(ImageFilter.GaussianBlur(radius=5))
+        img.paste(glow, (sp_x - 6, sp_y2 - 6), glow)
+        draw = ImageDraw.Draw(img)
+        draw.line(pts, fill=UL_COLOR, width=2)
+    else:
+        draw.rectangle([sp_x, sp_y2, sp_x + sp_w, sp_y2 + sp_h], fill=(6, 8, 14))
+        draw.text((sp_x + sp_w//2 - 50, sp_y2 + sp_h//2 - 8), "1 test", fill=TEXT_DIM, font=font(16))
 
-    # ── Bottom: Ping history bar ──
-    ping_y = spark_y + spark_h + 30
-    draw.text((30, ping_y), "PING HISTORY", fill=PING_COLOR, font=font(14))
-    if _cache['ping_history']:
-        avg_ping = sum(_cache['ping_history']) / len(_cache['ping_history'])
-        draw.text((200, ping_y), f"avg {avg_ping:.0f}ms", fill=TEXT_DIM, font=font(14))
-    # Draw ping as thin sparkline
-    _draw_sparkline(draw, img, 30, ping_y + 16, w - 60, 30,
-                    _cache['ping_history'], PING_COLOR, filled=False)
-    draw = ImageDraw.Draw(img)
+    # Ping sparkline (thin, bottom right)
+    sp_y3 = sp_y2 + sp_h + 20
+    draw.text((sp_x, sp_y3 - 14), "PING", fill=PING_COLOR, font=font(14))
+    ping_data = _cache['ping_history']
+    if ping_data and len(ping_data) >= 2:
+        ph2 = 30
+        draw.rectangle([sp_x, sp_y3, sp_x + sp_w, sp_y3 + ph2], fill=(6, 8, 14))
+        mx = max(ping_data) or 1
+        pts = [(sp_x + int(i * sp_w / (len(ping_data)-1)),
+                sp_y3 + ph2 - int(min(v, mx) * ph2 / mx))
+               for i, v in enumerate(ping_data)]
+        draw.line(pts, fill=PING_COLOR, width=2)
 
     # Bottom accent
     for i in range(6):
@@ -429,10 +521,9 @@ if __name__ == '__main__':
     import sys
     if '--once' in sys.argv:
         init()
-        # Wait for test to complete
         while _cache['testing']:
             time.sleep(1)
-            print(f"  {_cache['phase']}...")
+            print(f"  {_cache['phase']} {_cache['live_speed']:.1f} Mbps")
         render_frame().save('/tmp/speedtest.png')
         print("Saved to /tmp/speedtest.png")
     else:
