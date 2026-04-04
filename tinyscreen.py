@@ -446,11 +446,11 @@ def _evdi_available():
         return False
 
 def _configure_evdi_display():
-    """Find and configure the EVDI xrandr output. Returns (output_name, primary_height)."""
+    """Find and configure the EVDI xrandr output. Returns (output_name, primary_height, primary_name)."""
     try:
         out = subprocess.check_output(['xrandr'], timeout=10, stderr=subprocess.DEVNULL).decode()
     except Exception:
-        return None, 1080
+        return None, 1080, None
 
     # Find EVDI output
     evdi_output = None
@@ -461,7 +461,7 @@ def _configure_evdi_display():
                 evdi_output = name
                 break
     if not evdi_output:
-        return None, 1080
+        return None, 1080, None
 
     # Find primary display and its height
     primary = None
@@ -488,7 +488,7 @@ def _configure_evdi_display():
     else:
         cmd += ['--pos', f'0x{primary_height}']
     subprocess.run(cmd, timeout=10, capture_output=True)
-    return evdi_output, primary_height
+    return evdi_output, primary_height, primary
 
 def mode_evdi(url, fps, fg):
     """EVDI virtual monitor mode. If url is given, also launches a browser on the display."""
@@ -520,10 +520,10 @@ def mode_evdi(url, fps, fg):
 
     # Start the EVDI bridge
     log("Starting EVDI bridge...")
+    evdi_log = open('/tmp/tinyscreen-evdi.log', 'a')
     bridge = subprocess.Popen(
         ['python3', bridge_script, '--fg', '--max-fps', str(fps)],
-        stdout=open('/tmp/tinyscreen-evdi.log', 'a'),
-        stderr=subprocess.STDOUT)
+        stdout=evdi_log, stderr=subprocess.STDOUT)
     _child_procs.append(bridge)
     time.sleep(5)
 
@@ -533,7 +533,7 @@ def mode_evdi(url, fps, fg):
     log(f"EVDI bridge running (PID {bridge.pid})")
 
     # Configure the display
-    evdi_output, primary_height = _configure_evdi_display()
+    evdi_output, primary_height, primary = _configure_evdi_display()
     if not evdi_output:
         log("ERROR: No EVDI display output found")
         bridge.terminate()
@@ -610,11 +610,10 @@ def mode_evdi(url, fps, fg):
                 log("EVDI bridge died, restarting...")
                 bridge = subprocess.Popen(
                     ['python3', bridge_script, '--fg', '--max-fps', str(fps)],
-                    stdout=open('/tmp/tinyscreen-evdi.log', 'a'),
-                    stderr=subprocess.STDOUT)
+                    stdout=evdi_log, stderr=subprocess.STDOUT)
                 _child_procs.append(bridge)
                 time.sleep(5)
-                _configure_evdi_display()
+                evdi_output, primary_height, primary = _configure_evdi_display()
             if browser_proc and browser_proc.poll() is not None:
                 log("Browser died, restarting...")
                 browser_proc = subprocess.Popen([
@@ -633,6 +632,7 @@ def mode_evdi(url, fps, fg):
         bridge.terminate()
         if browser_proc:
             browser_proc.terminate()
+        evdi_log.close()
 
 def write_pid():
     with open(PIDFILE, 'w') as f:

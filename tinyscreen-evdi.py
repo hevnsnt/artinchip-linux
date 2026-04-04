@@ -173,8 +173,9 @@ class EvdiBridge:
             return
 
         # Convert BGRA buffer to RGB PIL Image (JPEG doesn't support alpha)
+        # Pass ctypes array directly — avoids copying 3.3MB every frame
         img = Image.frombuffer('RGB', (WIDTH, HEIGHT),
-                               bytes(self._buf), 'raw', 'BGRX', STRIDE, 1)
+                               self._buf, 'raw', 'BGRX', STRIDE, 1)
 
         jpeg = image_to_jpeg(img, 80)
 

@@ -22,7 +22,7 @@ sudo tinyscreen --url http://your-dashboard:8420/
 
 ## Platform Notes
 
-### Kali Linux
+### Debian / Kali
 
 ```bash
 sudo apt install -y evdi-dkms libevdi1 xdotool
@@ -72,7 +72,7 @@ sudo ./launch-dashboard.sh --stop
 
 ### 1. Enable autologin (EVDI needs a desktop session)
 
-**LightDM (Kali):**
+**LightDM (Debian/XFCE):**
 ```bash
 sudo mkdir -p /etc/lightdm/lightdm.conf.d
 cat << EOF | sudo tee /etc/lightdm/lightdm.conf.d/autologin.conf
