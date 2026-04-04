@@ -174,13 +174,14 @@ fi
 
 # ── 6. Launch browser ───────────────────────────────────────────
 info "Launching browser..."
-chromium --no-first-run --no-sandbox --test-type \
-    --disable-session-crashed-bubble --noerrdialogs \
-    --disable-infobars \
-    --class=tinyscreen-display \
-    --window-size=1920,440 \
-    --window-position=0,"$PRIMARY_HEIGHT" \
-    --app="$URL" > /dev/null 2>&1 &
+CHROME_ARGS="--no-first-run --test-type --disable-session-crashed-bubble --noerrdialogs --disable-infobars --class=tinyscreen-display --window-size=1920,440 --window-position=0,$PRIMARY_HEIGHT --app=$URL"
+
+# Run as real user (not root) for security — avoids --no-sandbox
+if [ -n "$SUDO_USER" ]; then
+    su - "$SUDO_USER" -c "DISPLAY=$DISPLAY chromium $CHROME_ARGS" > /dev/null 2>&1 &
+else
+    chromium --no-sandbox $CHROME_ARGS > /dev/null 2>&1 &
+fi
 BROWSER_PID=$!
 
 # Wait for the window to appear (retry up to 15s)

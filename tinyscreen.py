@@ -565,8 +565,10 @@ def mode_evdi(url, fps, fg):
             time.sleep(1)
 
         log(f"Launching {browser} -> {url}")
-        browser_proc = subprocess.Popen([
-            browser, '--no-first-run', '--no-sandbox',
+        # Run browser as the real user (not root) for security — avoids --no-sandbox
+        real_user = os.environ.get('SUDO_USER', '')
+        chrome_args = [
+            browser, '--no-first-run',
             '--test-type',  # suppresses "unsupported flag" warning bar
             '--disable-session-crashed-bubble', '--noerrdialogs',
             '--disable-infobars',
@@ -574,7 +576,17 @@ def mode_evdi(url, fps, fg):
             '--window-size=1920,440',
             f'--window-position=0,{primary_height}',
             f'--app={url}'
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ]
+        if real_user and os.getuid() == 0:
+            browser_proc = subprocess.Popen(
+                ['su', '-', real_user, '-c',
+                 ' '.join(f"'{a}'" for a in chrome_args)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env={**os.environ, 'DISPLAY': os.environ.get('DISPLAY', ':0')})
+        else:
+            chrome_args.insert(2, '--no-sandbox')  # fallback if no SUDO_USER
+            browser_proc = subprocess.Popen(
+                chrome_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         _child_procs.append(browser_proc)
         time.sleep(5)
 
@@ -616,14 +628,15 @@ def mode_evdi(url, fps, fg):
                 evdi_output, primary_height, primary = _configure_evdi_display()
             if browser_proc and browser_proc.poll() is not None:
                 log("Browser died, restarting...")
-                browser_proc = subprocess.Popen([
-                    browser, '--no-first-run', '--no-sandbox', '--test-type',
-                    '--disable-session-crashed-bubble', '--noerrdialogs',
-                    '--disable-infobars', '--class=tinyscreen-display',
-                    '--window-size=1920,440',
-                    f'--window-position=0,{primary_height}',
-                    f'--app={url}'
-                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if real_user and os.getuid() == 0:
+                    browser_proc = subprocess.Popen(
+                        ['su', '-', real_user, '-c',
+                         ' '.join(f"'{a}'" for a in chrome_args)],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        env={**os.environ, 'DISPLAY': os.environ.get('DISPLAY', ':0')})
+                else:
+                    browser_proc = subprocess.Popen(
+                        chrome_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 _child_procs.append(browser_proc)
             time.sleep(5)
     except KeyboardInterrupt:
