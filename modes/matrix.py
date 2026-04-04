@@ -25,10 +25,10 @@ PURPLE = (160, 100, 255)
 
 # Matrix-specific colours — dramatic gradient from white-hot head to deep green
 MATRIX_HEAD = (255, 255, 255)
-MATRIX_BRIGHT = (180, 255, 180)
-MATRIX_MID = (0, 220, 60)
-MATRIX_DIM = (0, 120, 30)
-MATRIX_DARK = (0, 50, 15)
+MATRIX_BRIGHT = (150, 255, 150)
+MATRIX_MID = (0, 255, 65)
+MATRIX_DIM = (0, 180, 40)
+MATRIX_DARK = (0, 100, 25)
 MATRIX_BG = (0, 0, 0)
 
 # --- Font cache ---
@@ -204,12 +204,9 @@ def render_frame(w=1920, h=440):
         col.advance()
         col.draw(draw, f)
 
-    # --- Rain stays bright — it's the vibe ---
-    img = ImageEnhance.Brightness(img).enhance(0.85)
-
-    # --- Phosphor bloom ---
+    # --- Phosphor bloom — makes the rain glow ---
     bloom = img.filter(ImageFilter.GaussianBlur(radius=4))
-    bloom = ImageEnhance.Brightness(bloom).enhance(0.45)
+    bloom = ImageEnhance.Brightness(bloom).enhance(0.6)
     img = ImageChops.add(img, bloom)
 
     # --- Bottom reflection (subtle) ---
