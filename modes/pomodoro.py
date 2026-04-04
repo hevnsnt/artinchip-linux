@@ -387,10 +387,10 @@ def render_frame(w=1920, h=440):
     content_y = py0 + bar_h + pad
     content_h = ph - bar_h - pad
 
-    # ── Left section: Phase info + session count (20%) ──
-    left_w = int(w * 0.20)
+    # ── Left section: Phase + session info (18%) ──
+    left_w = int(w * 0.18)
     _draw_panel(draw, img, pad, content_y, left_w, content_h, accent_color=phase_color)
-    draw = ImageDraw.Draw(img)  # re-acquire after paste
+    draw = ImageDraw.Draw(img)
 
     # Phase label
     phase_label = _phase
@@ -399,38 +399,33 @@ def render_frame(w=1920, h=440):
             phase_label = "LONG BREAK"
         else:
             phase_label = "SHORT BREAK"
-    draw.text((pad + 16, content_y + 14), phase_label,
-              fill=phase_color, font=font(38))
+    draw.text((pad + 20, content_y + 16), phase_label,
+              fill=phase_color, font=font(36))
 
-    # Session info
+    # Session number
     sy = content_y + 70
-    draw.text((pad + 16, sy), "SESSION", fill=TEXT_DIM, font=font(14))
-    draw.text((pad + 16, sy + 22), f"#{_session_count + 1}",
-              fill=TEXT_BRIGHT, font=font(48))
+    draw.text((pad + 20, sy), "SESSION", fill=TEXT_DIM, font=font(18))
+    draw.text((pad + 20, sy + 26), f"#{_session_count + 1}",
+              fill=TEXT_BRIGHT, font=font(52))
 
-    # Completed sessions
-    draw.text((pad + 16, sy + 80), "COMPLETED", fill=TEXT_DIM, font=font(14))
-    draw.text((pad + 16, sy + 100), str(_session_count),
-              fill=ACCENT, font=font(42))
+    # Completed
+    draw.text((pad + 20, sy + 95), "COMPLETED", fill=TEXT_DIM, font=font(18))
+    draw.text((pad + 20, sy + 121), str(_session_count),
+              fill=ACCENT, font=font(44))
 
-    # Total focus time
+    # Focus time
     total_mins = int(_total_work_time // 60)
-    draw.text((pad + 16, sy + 155), "FOCUS TIME", fill=TEXT_DIM, font=font(14))
+    draw.text((pad + 20, sy + 180), "FOCUS TIME", fill=TEXT_DIM, font=font(18))
     if total_mins >= 60:
-        draw.text((pad + 16, sy + 175), f"{total_mins // 60}h {total_mins % 60}m",
-                  fill=TEXT, font=font(28))
+        draw.text((pad + 20, sy + 206), f"{total_mins // 60}h {total_mins % 60}m",
+                  fill=TEXT, font=font(30))
     else:
-        draw.text((pad + 16, sy + 175), f"{total_mins}m",
-                  fill=TEXT, font=font(28))
+        draw.text((pad + 20, sy + 206), f"{total_mins}m",
+                  fill=TEXT, font=font(30))
 
-    # Session dots at bottom of left panel
-    dots_y = content_y + content_h - 30
-    _draw_session_dots(img, pad + 16, dots_y, _session_count, _session_count)
-    draw = ImageDraw.Draw(img)  # re-acquire after paste
-
-    # ── Center section: Massive timer + circular progress (55%) ──
+    # ── Center section: Massive timer + circular progress (57%) ──
     center_x = pad + left_w + pad
-    center_w = int(w * 0.55)
+    center_w = int(w * 0.57)
     _draw_panel(draw, img, center_x, content_y, center_w, content_h, accent_color=phase_color)
     draw = ImageDraw.Draw(img)  # re-acquire after paste
 
@@ -475,91 +470,54 @@ def render_frame(w=1920, h=440):
     # Sharp timer text
     draw.text((tx, ty), timer_str, fill=progress_color, font=timer_font)
 
-    # Phase label under timer
-    phase_font = font(24)
+    # Phase label centered under timer
+    phase_font = font(28)
     bbox_p = draw.textbbox((0, 0), phase_label, font=phase_font)
     pw = bbox_p[2] - bbox_p[0]
     px = ring_cx - pw // 2
-    py = ty + th + 20
+    py = ring_cy + 30
     draw.text((px, py), phase_label, fill=phase_color, font=phase_font)
 
-    # ── Right section: Detailed info (25%) ──
+    # ── Right section: Key info (25%) ──
     right_x = center_x + center_w + pad
     right_w = w - right_x - pad
     _draw_panel(draw, img, right_x, content_y, right_w, content_h, accent_color=phase_color)
-    draw = ImageDraw.Draw(img)  # re-acquire after paste
-
-    ry = content_y + 14
-    row_gap = 44
-
-    # Duration info
-    draw.text((right_x + 16, ry), "DURATION", fill=TEXT_DIM, font=font(14))
-    draw.text((right_x + 16, ry + 20), f"{_phase_duration // 60} minutes",
-              fill=TEXT, font=font(26))
-
-    # Elapsed
-    ry += row_gap + 20
-    elapsed_mins = int(elapsed // 60)
-    elapsed_secs = int(elapsed % 60)
-    draw.text((right_x + 16, ry), "ELAPSED", fill=TEXT_DIM, font=font(14))
-    draw.text((right_x + 16, ry + 20), f"{elapsed_mins:02d}:{elapsed_secs:02d}",
-              fill=TEXT, font=font(26))
-
-    # Remaining
-    ry += row_gap + 20
-    draw.text((right_x + 16, ry), "REMAINING", fill=TEXT_DIM, font=font(14))
-    draw.text((right_x + 16, ry + 20), f"{mins:02d}:{secs:02d}",
-              fill=progress_color, font=font(26))
-
-    # Percentage with glow bar
-    ry += row_gap + 20
-    draw.text((right_x + 16, ry), "PROGRESS", fill=TEXT_DIM, font=font(14))
-    done_pct = 100.0 - pct_remaining
-    draw.text((right_x + 16, ry + 20), f"{done_pct:.0f}%",
-              fill=progress_color, font=font(34))
-    # Mini progress bar
-    bar_x = right_x + 16
-    bar_y_pos = ry + 60
-    bar_w_inner = right_w - 32
-    _draw_bar(draw, img, bar_x, bar_y_pos, bar_w_inner, 10, done_pct, progress_color)
-    draw = ImageDraw.Draw(img)  # re-acquire after paste
-
-    # Next phase preview
-    ry += row_gap + 50
-    # Separator line (glowing)
-    sep_glow = Image.new('RGBA', (right_w - 2, 8), (0, 0, 0, 0))
-    sg = ImageDraw.Draw(sep_glow)
-    sg.rectangle([0, 3, right_w - 2, 4], fill=ACCENT + (80,))
-    sep_glow = sep_glow.filter(ImageFilter.GaussianBlur(radius=2))
-    img.paste(sep_glow, (right_x + 1, ry), sep_glow)
     draw = ImageDraw.Draw(img)
 
-    ry += 12
-    draw.text((right_x + 16, ry), "NEXT UP", fill=TEXT_DIM, font=font(14))
+    rx = right_x + 20
+    ry = content_y + 16
+
+    # Duration
+    draw.text((rx, ry), "DURATION", fill=TEXT_DIM, font=font(18))
+    draw.text((rx, ry + 24), f"{_phase_duration // 60} minutes",
+              fill=TEXT_BRIGHT, font=font(30))
+
+    # Remaining
+    ry += 75
+    draw.text((rx, ry), "REMAINING", fill=TEXT_DIM, font=font(18))
+    draw.text((rx, ry + 24), f"{mins:02d}:{secs:02d}",
+              fill=progress_color, font=font(34))
+
+    # Progress
+    ry += 80
+    done_pct = 100.0 - pct_remaining
+    draw.text((rx, ry), "PROGRESS", fill=TEXT_DIM, font=font(18))
+    draw.text((rx, ry + 24), f"{done_pct:.0f}%",
+              fill=progress_color, font=font(38))
+
+    # Next up
+    ry += 85
+    draw.text((rx, ry), "NEXT UP", fill=TEXT_DIM, font=font(18))
     if _phase == 'WORK':
         if (_session_count + 1) % LONG_BREAK_EVERY == 0:
             next_label = "LONG BREAK (15m)"
-            next_color = CYAN
         else:
             next_label = "SHORT BREAK (5m)"
-            next_color = CYAN
+        next_color = CYAN
     else:
         next_label = "WORK (25m)"
         next_color = GREEN
-    draw.text((right_x + 16, ry + 22), next_label,
-              fill=next_color, font=font(22))
-
-    # Cycle progress
-    ry += 60
-    cycle_pos = _session_count % LONG_BREAK_EVERY
-    if _phase == 'WORK':
-        cycle_pos_display = cycle_pos + 1
-    else:
-        cycle_pos_display = cycle_pos
-    draw.text((right_x + 16, ry), "CYCLE", fill=TEXT_DIM, font=font(14))
-    draw.text((right_x + 16, ry + 20),
-              f"{cycle_pos_display} / {LONG_BREAK_EVERY}",
-              fill=TEXT, font=font(22))
+    draw.text((rx, ry + 24), next_label, fill=next_color, font=font(26))
 
     # ═══════════════════════════════════════════════════════════════
     # Full-width progress bar at bottom
