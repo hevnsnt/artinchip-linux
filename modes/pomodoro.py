@@ -447,15 +447,30 @@ def render_frame(w=1920, h=440):
     secs = int(remaining % 60)
     timer_str = f"{mins:02d}:{secs:02d}"
 
-    timer_font = font(130)
+    # Timer + phase label measured together so they center as a unit
+    timer_font = font(110)
+    phase_font = font(26)
+
     bbox_t = draw.textbbox((0, 0), timer_str, font=timer_font)
     tw = bbox_t[2] - bbox_t[0]
     th = bbox_t[3] - bbox_t[1]
-    tx = ring_cx - tw // 2
-    ty = ring_cy - th // 2 - 20
+    bbox_p = draw.textbbox((0, 0), phase_label, font=phase_font)
+    pw = bbox_p[2] - bbox_p[0]
+    ph_text = bbox_p[3] - bbox_p[1]
 
-    # Hero text glow: blurred copy behind sharp text
-    glow_pad = 40
+    # Total block height: timer + gap + phase label
+    gap = 8
+    total_h = th + gap + ph_text
+    # Center the block vertically in the ring
+    block_top = ring_cy - total_h // 2
+
+    tx = ring_cx - tw // 2
+    ty = block_top
+    px = ring_cx - pw // 2
+    py = block_top + th + gap
+
+    # Hero text glow
+    glow_pad = 30
     glow_w = tw + glow_pad * 2
     glow_h = th + glow_pad * 2
     if glow_w > 0 and glow_h > 0:
@@ -463,19 +478,14 @@ def render_frame(w=1920, h=440):
         tg_draw = ImageDraw.Draw(text_glow)
         tg_draw.text((glow_pad, glow_pad), timer_str,
                      fill=progress_color + (120,), font=timer_font)
-        text_glow = text_glow.filter(ImageFilter.GaussianBlur(radius=16))
+        text_glow = text_glow.filter(ImageFilter.GaussianBlur(radius=14))
         img.paste(text_glow, (tx - glow_pad, ty - glow_pad), text_glow)
         draw = ImageDraw.Draw(img)
 
     # Sharp timer text
     draw.text((tx, ty), timer_str, fill=progress_color, font=timer_font)
 
-    # Phase label centered under timer
-    phase_font = font(28)
-    bbox_p = draw.textbbox((0, 0), phase_label, font=phase_font)
-    pw = bbox_p[2] - bbox_p[0]
-    px = ring_cx - pw // 2
-    py = ring_cy + 30
+    # Phase label centered below timer
     draw.text((px, py), phase_label, fill=phase_color, font=phase_font)
 
     # ── Right section: Key info (25%) ──
