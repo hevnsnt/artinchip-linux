@@ -204,73 +204,82 @@ def render_frame(w=1920, h=440):
         col.advance()
         col.draw(draw, f)
 
-    # --- Post-process: phosphor bloom ---
-    bloom = img.filter(ImageFilter.GaussianBlur(radius=4))
-    bloom = ImageEnhance.Brightness(bloom).enhance(0.5)
+    # --- Dim the rain — it's background atmosphere, not the focus ---
+    img = ImageEnhance.Brightness(img).enhance(0.4)
+
+    # --- Phosphor bloom (subtle, atmospheric) ---
+    bloom = img.filter(ImageFilter.GaussianBlur(radius=5))
+    bloom = ImageEnhance.Brightness(bloom).enhance(0.3)
     img = ImageChops.add(img, bloom)
 
-    # --- Post-process: bottom reflection ---
-    reflect_h = 60
+    # --- Bottom reflection (subtle) ---
+    reflect_h = 40
     if h > reflect_h * 2:
         strip = img.crop((0, h - reflect_h * 2, w, h - reflect_h))
         strip = strip.transpose(Image.FLIP_TOP_BOTTOM)
-        strip = ImageEnhance.Brightness(strip).enhance(0.15)
+        strip = ImageEnhance.Brightness(strip).enhance(0.1)
         img.paste(strip, (0, h - reflect_h))
 
-    # --- Overlay: top gradient bar for readability ---
-    top_bar_h = 20
-    top_bar = Image.new('RGBA', (w, top_bar_h), (0, 0, 0, 0))
-    top_bar_draw = ImageDraw.Draw(top_bar)
-    for y_off in range(top_bar_h):
-        alpha = int(180 * (1.0 - y_off / top_bar_h))
-        top_bar_draw.line([(0, y_off), (w, y_off)], fill=(0, 0, 0, alpha))
     img_rgba = img.convert('RGBA')
-    img_rgba.paste(top_bar, (0, 0), top_bar)
-
     draw = ImageDraw.Draw(img_rgba)
 
-    # --- Overlay: hostname, time, IP at fixed positions ---
-    bold_font = font(28)
-    ip_font = font(22)
+    # --- Syslog: THE PRIMARY CONTENT ---
+    # Fetch more lines, refresh more often
+    now = time.time()
+    if now - _last_syslog_time > 3:
+        _last_syslog = _get_syslog_lines(15)
+        _last_syslog_time = now
 
-    # Hostname - top left
-    draw.text((16, 6), _hostname, fill=MATRIX_HEAD, font=bold_font)
+    # Header bar with gradient fade
+    header_h = 42
+    header = Image.new('RGBA', (w, header_h), (0, 0, 0, 0))
+    hd = ImageDraw.Draw(header)
+    for y_off in range(header_h):
+        alpha = int(220 * (1.0 - y_off / header_h) ** 0.5)
+        hd.line([(0, y_off), (w, y_off)], fill=(0, 0, 0, alpha))
+    img_rgba.paste(header, (0, 0), header)
+    draw = ImageDraw.Draw(img_rgba)
 
-    # Time - top center
+    # Hostname / time / IP in header
+    bold_font = font(26)
+    draw.text((16, 8), _hostname, fill=MATRIX_HEAD, font=bold_font)
     time_str = datetime.now().strftime('%H:%M:%S')
     time_bbox = draw.textbbox((0, 0), time_str, font=bold_font)
     time_w = time_bbox[2] - time_bbox[0]
-    draw.text(((w - time_w) // 2, 6), time_str, fill=MATRIX_HEAD, font=bold_font)
-
-    # IP - top right
-    ip_str = _ip_address
-    ip_bbox = draw.textbbox((0, 0), ip_str, font=ip_font)
+    draw.text(((w - time_w) // 2, 8), time_str, fill=MATRIX_HEAD, font=bold_font)
+    ip_font = font(20)
+    ip_bbox = draw.textbbox((0, 0), _ip_address, font=ip_font)
     ip_w = ip_bbox[2] - ip_bbox[0]
-    draw.text((w - ip_w - 16, 10), ip_str, fill=MATRIX_BRIGHT, font=ip_font)
+    draw.text((w - ip_w - 16, 12), _ip_address, fill=MATRIX_BRIGHT, font=ip_font)
 
-    # --- Overlay: syslog lines (refresh every 5 seconds) ---
-    now = time.time()
-    if now - _last_syslog_time > 5:
-        _last_syslog = _get_syslog_lines(5)
-        _last_syslog_time = now
+    # Log lines — large, filling most of the screen
+    log_font = font(20)
+    line_h = 28
+    log_top = header_h + 4
+    max_lines = (h - log_top - 8) // line_h
+    lines_to_show = _last_syslog[-max_lines:] if _last_syslog else []
 
-    overlay_font = font(16)
-    line_h = 22
-    syslog_y = h - line_h * len(_last_syslog) - 10
-    for i, line in enumerate(_last_syslog):
-        # Truncate long lines
-        disp = line[:160] if len(line) > 160 else line
-        y_pos = syslog_y + i * line_h
-        if y_pos < 0:
-            continue
-        # Draw full-width semi-transparent black bar behind text
-        draw.rectangle(
-            [0, y_pos - 1, w, y_pos + line_h - 1],
-            fill=(0, 0, 0, 180),
-        )
-        draw.text((10, y_pos), disp, fill=MATRIX_MID, font=overlay_font)
+    for i, line in enumerate(lines_to_show):
+        y_pos = log_top + i * line_h
+        # Truncate to fit width
+        disp = line[:140] if len(line) > 140 else line
 
-    # --- Post-process: scanline overlay ---
+        # Semi-transparent dark bar behind each line
+        draw.rectangle([0, y_pos - 2, w, y_pos + line_h - 4],
+                       fill=(0, 0, 0, 160))
+
+        # Colorize: timestamps in dim, rest in bright green
+        # Highlight errors/warnings
+        if any(kw in disp.lower() for kw in ['error', 'fail', 'crit']):
+            text_color = (255, 80, 80, 255)  # red
+        elif any(kw in disp.lower() for kw in ['warn', 'timeout']):
+            text_color = (255, 220, 0, 255)  # yellow
+        else:
+            text_color = MATRIX_BRIGHT + (255,)
+
+        draw.text((16, y_pos), disp, fill=text_color, font=log_font)
+
+    # --- Scanline overlay ---
     img_rgba = Image.alpha_composite(img_rgba, _get_scanlines(w, h))
     img = img_rgba.convert('RGB')
 
