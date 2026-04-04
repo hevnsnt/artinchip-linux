@@ -31,6 +31,9 @@
 **Pomodoro Timer** — 25/5 focus timer with circular progress:
 ![pomodoro](screenshots/pomodoro.png)
 
+**Network Map** — live device scanner with color-coded types:
+![lanmap](screenshots/lanmap.png)
+
 ## Supported Hardware
 
 | Display | Resolution | Chipset | USB ID | Status |
@@ -68,6 +71,7 @@ The installer handles dependencies, udev rules, and puts `tinyscreen` in your PA
 | **Network Monitor** | `--netmon` | Active connections, state breakdown, process names |
 | **News Crawl** | `--news` | Scrolling RSS headlines from Reuters, BBC, Hacker News |
 | **Pomodoro Timer** | `--pomodoro` | 25/5 focus timer with circular progress and color shifts |
+| **Network Map** | `--lanmap` | Live network device scanner via nmap with color-coded device types |
 
 ### Media & Web
 
