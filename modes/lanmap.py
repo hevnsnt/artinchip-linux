@@ -402,29 +402,22 @@ def render_frame(w=1920, h=440):
     # Try column counts from fewest to most, pick the one that fits all hosts
     # with the largest possible row height (and thus font)
     max_cols = 4
-    min_row_h = 20   # smallest acceptable row height
+    min_row_h = 26   # hard floor — anything smaller is unreadable
     max_row_h = 36   # largest row height (big font)
 
-    best_cols = 1
-    best_row_h = max_row_h
-    for try_cols in range(1, max_cols + 1):
-        rows_needed = -(-n_hosts // try_cols)  # ceiling division
-        try_row_h = avail_h // max(rows_needed, 1)
-        try_row_h = max(min_row_h, min(max_row_h, try_row_h))
-        fits = rows_needed * try_row_h <= avail_h
-        if fits:
-            best_cols = try_cols
-            best_row_h = try_row_h
-            break
-        best_cols = try_cols
-        best_row_h = try_row_h
+    # Strategy: use max columns, maximize row height within that
+    # More columns = fewer rows per column = bigger font
+    rows_at_max_cols = -(-n_hosts // max_cols)
+    best_row_h = min(max_row_h, avail_h // max(rows_at_max_cols, 1))
+    best_row_h = max(min_row_h, best_row_h)
+    best_cols = max_cols
 
     num_cols = best_cols
     row_h = best_row_h
     rows_per_col = max(1, avail_h // row_h)
 
-    # Font scales with row height
-    data_font_size = max(13, min(18, row_h - 8))
+    # Font scales with row height — minimum 16px, never unreadable
+    data_font_size = max(16, min(18, row_h - 8))
 
     # Paginate only if still can't fit
     hosts_per_page = rows_per_col * num_cols
