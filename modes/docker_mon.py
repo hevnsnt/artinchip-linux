@@ -276,10 +276,10 @@ def render_frame(w=1920, h=440):
     pad_x = 20
     pad_y = 6
 
-    title_font = font(22)
+    title_font = font(24)
     name_font = font(20)
     data_font = font(16)
-    label_font = font(14)
+    label_font = font(18)
 
     # --- Header with gradient fill and glowing accent line ---
     header_h = 44
@@ -308,8 +308,8 @@ def render_frame(w=1920, h=440):
         total = len(_cache['ps'])
         if total != len(containers):
             count_text = f"{len(containers)} active / {total} total"
-    draw.text((w - pad_x - label_font.getlength(count_text), 16), count_text,
-              fill=TEXT_DIM, font=label_font)
+    draw.text((w - pad_x - title_font.getlength(count_text), 12), count_text,
+              fill=TEXT, font=title_font)
 
     # --- Handle empty / error states ---
     if _cache['error'] and not containers:
@@ -345,13 +345,13 @@ def render_frame(w=1920, h=440):
         c = _lerp_color((12, 16, 28), (8, 11, 20), t)
         draw.line([(0, col_label_y + row), (w, col_label_y + row)], fill=c)
 
-    # Column positions — spread wider across 1920px
+    # Column positions — fit within 1920px without overlapping
     col_status_x = pad_x
     col_name_x = pad_x + 24
-    col_cpu_x = 360
-    col_mem_x = 720
-    col_net_x = 1100
-    col_pids_x = 1500
+    col_cpu_x = 280
+    col_mem_x = 580
+    col_net_x = 880
+    col_pids_x = 1200
 
     draw.text((col_name_x, col_label_y + 3), "CONTAINER", fill=TEXT_DIM, font=label_font)
     draw.text((col_cpu_x, col_label_y + 3), "CPU", fill=TEXT_DIM, font=label_font)
@@ -377,7 +377,7 @@ def render_frame(w=1920, h=440):
     row_h = max(32, avail_h // max(row_count, 1))
     row_h = min(row_h, 48)
 
-    bar_w = 240
+    bar_w = 160
     bar_h = 14
 
     for i, c in enumerate(display_containers):
@@ -421,17 +421,17 @@ def render_frame(w=1920, h=440):
         mem_color = GREEN if c['mem_pct'] < 50 else YELLOW if c['mem_pct'] < 80 else RED
         _draw_bar(draw, img, col_mem_x, bar_y, bar_w, bar_h, c['mem_pct'], mem_color)
         draw = ImageDraw.Draw(img)  # re-acquire after paste
-        mem_label = c['mem_usage']
-        if len(mem_label) > 26:
-            mem_label = mem_label[:26]
+        # Memory: just show used amount (not the full "X / limit" which is too long)
+        mem_label = c['mem_usage'].split('/')[0].strip()
         draw.text((col_mem_x + bar_w + 10, row_mid_y - 8), mem_label,
                   fill=TEXT, font=data_font)
 
-        # Net I/O
-        net_text = c['net_io']
-        if len(net_text) > 32:
-            net_text = net_text[:32]
-        draw.text((col_net_x, row_mid_y - 8), net_text, fill=CYAN, font=data_font)
+        # Net I/O — split into RX / TX on same line, truncated
+        net_parts = c['net_io'].split('/')
+        rx_text = net_parts[0].strip() if net_parts else ''
+        tx_text = net_parts[1].strip() if len(net_parts) > 1 else ''
+        draw.text((col_net_x, row_mid_y - 8), f"{rx_text}", fill=GREEN, font=data_font)
+        draw.text((col_net_x + 130, row_mid_y - 8), f"/ {tx_text}", fill=ORANGE, font=data_font)
 
         # PIDs
         draw.text((col_pids_x, row_mid_y - 8), c['pids'], fill=PURPLE, font=data_font)
