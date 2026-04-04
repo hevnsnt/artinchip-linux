@@ -40,8 +40,8 @@ def _get_scanlines(w, h):
     if key not in _scanline_cache:
         sl = Image.new('RGBA', (w, h), (0, 0, 0, 0))
         sd = ImageDraw.Draw(sl)
-        for y in range(0, h, 4):
-            sd.line([(0, y), (w, y)], fill=(0, 0, 0, 16))
+        for y in range(0, h, 3):
+            sd.line([(0, y), (w, y)], fill=(0, 0, 0, 55))
         _scanline_cache[key] = sl
     return _scanline_cache[key]
 
