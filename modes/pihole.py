@@ -245,26 +245,26 @@ def render_frame(w=1920, h=440):
     # Hero metrics spread across the top
     # TOTAL QUERIES
     mx = 220
-    draw.text((mx, 8), "QUERIES", fill=TEXT_DIM, font=font(16))
+    draw.text((mx, 8), "QUERIES", fill=TEXT, font=font(18))
     _hero(draw, img, mx, 28, _fmt(total), ACCENT, 52)
     draw = ImageDraw.Draw(img)
 
     # BLOCKED
     mx = 520
-    draw.text((mx, 8), "BLOCKED", fill=TEXT_DIM, font=font(16))
+    draw.text((mx, 8), "BLOCKED", fill=TEXT, font=font(18))
     _hero(draw, img, mx, 28, _fmt(blocked), BLOCK_RED, 52)
     draw = ImageDraw.Draw(img)
 
     # BLOCK RATE
     mx = 780
-    draw.text((mx, 8), "BLOCK RATE", fill=TEXT_DIM, font=font(16))
+    draw.text((mx, 8), "BLOCK RATE", fill=TEXT, font=font(18))
     rate_color = RED if pct > 15 else ORANGE if pct > 5 else GREEN
     _hero(draw, img, mx, 28, f"{pct:.1f}%", rate_color, 52)
     draw = ImageDraw.Draw(img)
 
     # RESPONSE TIME
     mx = 1050
-    draw.text((mx, 8), "RESPONSE", fill=TEXT_DIM, font=font(16))
+    draw.text((mx, 8), "RESPONSE", fill=TEXT, font=font(18))
     ms_color = GREEN if ms < 30 else YELLOW if ms < 80 else RED
     _hero(draw, img, mx, 28, f"{ms:.0f}ms", ms_color, 52)
     draw = ImageDraw.Draw(img)
@@ -272,7 +272,7 @@ def render_frame(w=1920, h=440):
     # ALLOWED
     mx = 1300
     allowed = total - blocked
-    draw.text((mx, 8), "ALLOWED", fill=TEXT_DIM, font=font(16))
+    draw.text((mx, 8), "ALLOWED", fill=TEXT, font=font(18))
     _hero(draw, img, mx, 28, _fmt(allowed), GREEN, 52)
     draw = ImageDraw.Draw(img)
 
