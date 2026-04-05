@@ -95,6 +95,13 @@ def _fetch_weather():
         region = nearest.get('region', [{'value': ''}])[0].get('value', '')
         new_weather['location'] = f"{area}, {region}" if area else "Unknown"
 
+        # Astronomy data for time-of-day awareness
+        astro = data.get('weather', [{}])[0].get('astronomy', [{}])[0]
+        new_weather['sunrise'] = astro.get('sunrise', '06:00 AM')
+        new_weather['sunset'] = astro.get('sunset', '07:00 PM')
+        new_weather['moon_phase'] = astro.get('moon_phase', '')
+        new_weather['moon_illumination'] = astro.get('moon_illumination', '50')
+
         _weather = new_weather
         _weather_error = None
         _weather_last_fetch = time.monotonic()
@@ -110,8 +117,51 @@ def _fetch_weather():
 # Condition classification
 # ---------------------------------------------------------------------------
 
-def _classify_condition(condition: str, temp_f) -> str:
+def _parse_time_12h(s):
+    """Parse '06:58 AM' to hour float (6.97)."""
+    try:
+        s = s.strip().upper()
+        parts = s.replace(':', ' ').replace('  ', ' ').split()
+        h = int(parts[0])
+        m = int(parts[1]) if len(parts) > 1 else 0
+        ampm = parts[-1] if len(parts) > 2 else 'AM'
+        if ampm == 'PM' and h != 12:
+            h += 12
+        if ampm == 'AM' and h == 12:
+            h = 0
+        return h + m / 60.0
+    except Exception:
+        return 12.0  # default to noon if parsing fails
+
+
+def _get_time_of_day(weather_data: dict) -> str:
+    """Determine time period: 'night', 'dawn', 'day', 'dusk'."""
+    import datetime
+    now_hour = datetime.datetime.now().hour + datetime.datetime.now().minute / 60.0
+
+    sunrise = _parse_time_12h(weather_data.get('sunrise', '06:00 AM'))
+    sunset = _parse_time_12h(weather_data.get('sunset', '07:00 PM'))
+
+    dawn_start = sunrise - 0.75   # 45 min before sunrise
+    dawn_end = sunrise + 0.5      # 30 min after sunrise
+    dusk_start = sunset - 0.5     # 30 min before sunset
+    dusk_end = sunset + 0.75      # 45 min after sunset
+
+    if now_hour < dawn_start or now_hour > dusk_end:
+        return 'night'
+    if dawn_start <= now_hour <= dawn_end:
+        return 'dawn'
+    if dusk_start <= now_hour <= dusk_end:
+        return 'dusk'
+    return 'day'
+
+
+def _classify_condition(condition: str, temp_f, weather_data: dict = None) -> str:
     cond = condition.lower()
+
+    # Get time of day
+    tod = _get_time_of_day(weather_data or {})
+
     is_hot = False
     try:
         if temp_f and float(temp_f) >= 95:
@@ -119,14 +169,23 @@ def _classify_condition(condition: str, temp_f) -> str:
     except (ValueError, TypeError):
         pass
 
-    if is_hot:
-        return 'hot'
+    # Weather-specific scenes (these override time-of-day)
     if 'thunder' in cond or 'storm' in cond:
         return 'thunder'
     if 'snow' in cond or 'blizzard' in cond or 'sleet' in cond or 'ice' in cond:
         return 'snow'
     if 'rain' in cond or 'drizzle' in cond or 'shower' in cond:
         return 'rain'
+
+    # Time-of-day scenes for clear/mild weather
+    if tod == 'night':
+        return 'night'
+    if tod in ('dawn', 'dusk'):
+        return 'sunset'
+
+    # Daytime scenes
+    if is_hot:
+        return 'hot'
     if 'fog' in cond or 'mist' in cond or 'haze' in cond:
         return 'fog'
     if 'overcast' in cond:
@@ -482,7 +541,7 @@ def render_frame(w: int = 1920, h: int = 440) -> Image.Image:
         condition = _weather.get('condition', 'Unknown')
         temp_f = _weather.get('temp_f')
 
-    scene_type = _classify_condition(condition, temp_f) if condition else 'partly_cloudy'
+    scene_type = _classify_condition(condition, temp_f, _weather) if condition else _get_time_of_day(_weather or {})
 
     # Get or create scene
     scene = _get_or_create_scene(scene_type, w, h)

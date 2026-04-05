@@ -34,6 +34,12 @@
 **Network Map** — live device scanner with color-coded types:
 ![lanmap](screenshots/lanmap.png)
 
+**DNS Blocker** — AdGuard/Pi-hole stats with query timeline:
+![pihole](screenshots/pihole.png)
+
+**Speed Test** — internet speed with animated testing and arc gauges:
+![speedtest](screenshots/speedtest.png)
+
 ## Supported Hardware
 
 | Display | Resolution | Chipset | USB ID | Status |
@@ -72,6 +78,8 @@ The installer handles dependencies, udev rules, and puts `tinyscreen` in your PA
 | **News Crawl** | `--news` | Scrolling RSS headlines from Reuters, BBC, Hacker News |
 | **Pomodoro Timer** | `--pomodoro` | 25/5 focus timer with circular progress and color shifts |
 | **Network Map** | `--lanmap` | Live network device scanner via nmap with color-coded device types |
+| **DNS Blocker** | `--pihole` | AdGuard Home / Pi-hole stats with timeline and top blocked |
+| **Speed Test** | `--speedtest` | Internet speed test with animated particles and arc gauges |
 
 ### Media & Web
 

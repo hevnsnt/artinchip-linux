@@ -9,6 +9,8 @@ from scenes.overcast import OvercastScene as FogScene
 from scenes.sunny import SunnyScene
 from scenes.hot import HotScene
 from scenes.partly_cloudy import PartlyCloudyScene
+from scenes.night import NightScene
+from scenes.sunset import SunsetScene
 
 SCENE_MAP = {
     'rain': RainScene,
@@ -19,6 +21,8 @@ SCENE_MAP = {
     'sunny': SunnyScene,
     'hot': HotScene,
     'partly_cloudy': PartlyCloudyScene,
+    'night': NightScene,
+    'sunset': SunsetScene,
 }
 
 __all__ = ['SCENE_MAP', 'BaseScene']
