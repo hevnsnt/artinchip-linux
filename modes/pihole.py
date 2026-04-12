@@ -11,6 +11,7 @@ import os
 import time
 import threading
 from PIL import Image, ImageDraw, ImageFont
+from modes.glow import paste_hero_text, glow_accent_line, glow_circle, glow_line
 
 # ── Colors ─────────────────────────────────────────────────────────
 BG          = (5, 7, 12)
@@ -90,7 +91,7 @@ def _get_scanlines(w, h):
 
 def _hero(draw, img, x, y, text, color, size):
     f = font(size)
-    draw.text((x, y), text, fill=color, font=f)
+    paste_hero_text(draw, img, x, y, text, color, f, radius=8)
 
 # ── API backends ───────────────────────────────────────────────────
 def _fetch_adguard(url, user, passwd):
@@ -218,6 +219,9 @@ def render_frame(w=1920, h=440):
     # Protection status indicator — glowing dot
     dot_color = SHIELD_GREEN if protected else RED
     dot_x, dot_y = 30, 22
+    glow, _ = glow_circle(10, dot_color, alpha=60, radius=6)
+    img.paste(glow, (dot_x - 18, dot_y - 18), glow)
+    draw = ImageDraw.Draw(img)
     draw.ellipse([dot_x, dot_y, dot_x + 20, dot_y + 20], fill=dot_color)
     bright = tuple(min(255, c + 80) for c in dot_color)
     draw.ellipse([dot_x + 5, dot_y + 5, dot_x + 15, dot_y + 15], fill=bright)
@@ -262,8 +266,9 @@ def render_frame(w=1920, h=440):
 
     # Thin accent line under hero metrics
     line_y = 95
-    draw.rectangle([0, line_y + 4, w, line_y + 6], fill=ACCENT)
-    draw.rectangle([0, line_y + 6, w, line_y + 8], fill=ACCENT + (40,))
+    accent = glow_accent_line(w, ACCENT, alpha=150, radius=3)
+    img.paste(accent, (0, line_y), accent)
+    draw = ImageDraw.Draw(img)
 
     # ═══════════════════════════════════════════════════════════════
     # MIDDLE: Full-width timeline (the visual centerpiece)
@@ -292,6 +297,13 @@ def render_frame(w=1920, h=440):
         fill_pts = points + [(spark_x + spark_w, spark_y + spark_h),
                              (spark_x, spark_y + spark_h)]
         draw.polygon(fill_pts, fill=(0, 80, 140))
+
+        # Cached glow on the query line
+        rel_points = [(px - spark_x, py - spark_y) for px, py in points]
+        glow_img, gpad = glow_line(rel_points, spark_w, spark_h, ACCENT,
+                                    alpha=160, width=5, radius=6)
+        img.paste(glow_img, (spark_x - gpad, spark_y - gpad), glow_img)
+        draw = ImageDraw.Draw(img)
 
         # Sharp query line
         draw.line(points, fill=ACCENT, width=2)

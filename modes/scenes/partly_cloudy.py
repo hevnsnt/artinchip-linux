@@ -9,7 +9,7 @@ feel luminous and airy on a 1920x440 bar LCD.
 import math
 import random
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 from scenes.base import BaseScene
 from scenes import engine
 
@@ -185,7 +185,7 @@ class PartlyCloudyScene(BaseScene):
             streak_draw.rectangle(
                 [0, scy - sh_half, w, scy + sh_half],
                 fill=(255, 240, 200, streak_alpha))
-            streak_layer = streak_layer.filter(ImageFilter.GaussianBlur(6))
+            streak_layer = engine.bloom(streak_layer, radius=12, intensity=1.0, downsample=4)
             scene = engine.additive_composite(scene, streak_layer)
 
         # 7 --- Cloud layers (sorted back-to-front by depth) ---
@@ -238,7 +238,7 @@ class PartlyCloudyScene(BaseScene):
                         [lx - lr, ly - lr // 2, lx + lr, ly + lr // 2],
                         fill=(248, 250, 255, lining_alpha))
         if any_lining:
-            lining_layer = lining_layer.filter(ImageFilter.GaussianBlur(3))
+            lining_layer = engine.bloom(lining_layer, radius=6, intensity=1.0, downsample=4)
             scene = engine.additive_composite(scene, lining_layer)
 
         # 9 --- Shadow overlay (darken when cloud covers sun) ---

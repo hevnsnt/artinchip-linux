@@ -56,17 +56,23 @@ class RainScene(BaseScene):
                 })
             self._cloud_layers.append((cfg, clouds))
 
-        # Pre-render all cloud sprites (cached in engine)
+        # Pre-render cloud sprites + pre-blur far/mid layers at init
         for cfg, clouds in self._cloud_layers:
             for cloud in clouds:
-                engine.render_cloud_sprite(
+                sprite = engine.render_cloud_sprite(
                     int(cloud['cw']), int(cloud['ch']),
                     cfg['color'], cfg['alpha'], cloud['seed'])
+                # Pre-blur sprites for far/mid layers (avoids per-frame blur)
+                if cfg['blur'] > 0:
+                    cloud['_sprite'] = sprite.filter(
+                        ImageFilter.GaussianBlur(cfg['blur']))
+                else:
+                    cloud['_sprite'] = sprite
 
-        # === RAIN PARTICLE POOL (220 drops) ===
-        self._pool = engine.ParticlePool(220)
+        # === RAIN PARTICLE POOL (100 drops — fewer but beautiful) ===
+        self._pool = engine.ParticlePool(100)
         pool = self._pool
-        for i in range(220):
+        for i in range(100):
             pool.active[i] = True
             pool.x[i] = rng.uniform(0, w + 60)
             pool.y[i] = rng.uniform(-h, h)
@@ -81,38 +87,45 @@ class RainScene(BaseScene):
         self._splashes: list[dict] = []
         self._ripples: list[dict] = []
 
-        # === LIGHT PATCHES (faint, bluish, diffuse through rain) ===
+        # === LIGHT PATCHES — pre-rendered glow sprites (no per-frame blur) ===
         self._light_patches = []
         for _ in range(3):
+            rx = int(rng.uniform(120, 280))
             self._light_patches.append({
                 'x': rng.uniform(0, w),
                 'y': rng.uniform(h * 0.08, h * 0.45),
-                'rx': rng.uniform(120, 280),
-                'ry': rng.uniform(35, 70),
+                'rx': rx,
+                'ry': int(rng.uniform(35, 70)),
                 'speed': rng.uniform(4, 12),
                 'phase': rng.uniform(0, math.tau),
-                'intensity': rng.uniform(0.4, 0.8),
+                'sprite': engine.glow_sprite(rx, (110, 120, 150), alpha_peak=14),
             })
 
-        # === GROUND MIST PUFFS (12 breathing puffs) ===
+        # === GROUND MIST — pre-rendered glow sprites (no per-frame blur) ===
         self._mist_puffs = []
-        for _ in range(12):
+        for _ in range(8):
+            rx = int(rng.uniform(100, 320))
+            alpha = rng.randint(18, 40)
             self._mist_puffs.append({
                 'x': rng.uniform(-200, w + 200),
                 'y': rng.uniform(h * 0.78, h * 0.96),
-                'rx': rng.uniform(100, 320),
-                'ry': rng.uniform(12, 35),
+                'rx': rx,
                 'speed': rng.uniform(5, 18),
-                'alpha': rng.randint(18, 40),
+                'alpha': alpha,
                 'phase': rng.uniform(0, math.tau),
+                'sprite': engine.glow_sprite(rx, (55, 62, 82), alpha_peak=alpha),
             })
 
-        # === PRE-COMPUTE VIGNETTE ===
+        # === PRE-COMPUTE VIGNETTE as RGBA overlay ===
         x_coords = np.linspace(-1, 1, w, dtype=np.float32)
         y_coords = np.linspace(-1, 1, h, dtype=np.float32)
         X, Y = np.meshgrid(x_coords, y_coords)
-        self._vignette = np.clip(
+        vignette = np.clip(
             1.0 - 0.18 * (X ** 2 * 0.3 + Y ** 2 * 0.7), 0.6, 1.0)
+        vig_alpha = ((1.0 - vignette) * 255).astype(np.uint8)
+        vig_rgba = np.zeros((h, w, 4), dtype=np.uint8)
+        vig_rgba[..., 3] = vig_alpha
+        self._vignette_img = Image.fromarray(vig_rgba, 'RGBA')
 
     # ------------------------------------------------------------------
     # Helpers
@@ -128,30 +141,27 @@ class RainScene(BaseScene):
         pool.size[i] = random.uniform(0.2, 1.0) + 0.5 * pool.depth[i]
         pool.life[i] = random.uniform(0.5, 2.0)
 
-    def _maybe_splash(self, x):
-        if random.random() > 0.30:
-            return
-        for _ in range(random.randint(3, 4)):
+    def _maybe_splash(self, x, depth):
+        # Every drop splashes — scale intensity by depth (near drops splash bigger)
+        count = 2 if depth < 0.4 else random.randint(3, 5)
+        for _ in range(count):
             self._splashes.append({
-                'x': x + random.uniform(-3, 3),
-                'y': float(self.h - random.randint(2, 8)),
-                'vx': random.uniform(-2.2, 2.2),
-                'vy': random.uniform(-4.5, -1.5),
-                'gravity': 0.45,
-                'life': random.randint(4, 8),
-                'max_life': 8,
-                'size': random.uniform(0.5, 1.5),
+                'x': x + random.uniform(-4, 4),
+                'y': float(self.h - random.randint(2, 6)),
+                'vx': random.uniform(-3.0, 3.0),
+                'vy': random.uniform(-6.0, -2.0) * (0.5 + depth * 0.5),
+                'gravity': 0.5,
+                'life': random.uniform(4, 10),
+                'max_life': 10,
+                'size': random.uniform(0.8, 2.0) * (0.5 + depth * 0.5),
             })
-
-    def _maybe_ripple(self, x):
-        if random.random() > 0.20:
-            return
+        # Ripple at impact point
         self._ripples.append({
             'x': x,
-            'y': float(self.h - random.randint(2, 12)),
+            'y': float(self.h - random.randint(2, 8)),
             'radius': 1.0,
-            'max_radius': random.uniform(8, 20),
-            'expand_speed': random.uniform(0.8, 1.6),
+            'max_radius': random.uniform(6, 18) * (0.5 + depth * 0.5),
+            'expand_speed': random.uniform(0.8, 1.8),
             'life': 1.0,
         })
 
@@ -166,62 +176,38 @@ class RainScene(BaseScene):
         # 1. Base gradient
         scene = self._gradient.copy()
 
-        # 2. Ambient light shift -- slow subtle brightness pulse
-        ambient_shift = 0.025 * math.sin(t * 0.12)
-        if abs(ambient_shift) > 0.004:
-            arr = np.array(scene, dtype=np.float32)
-            arr[..., :3] = np.clip(arr[..., :3] * (1.0 + ambient_shift), 0, 255)
-            scene = Image.fromarray(arr.astype(np.uint8), 'RGBA')
-
-        # 3. Light patches -- faint blue-white glows drifting, pulsing
-        light_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        light_draw = ImageDraw.Draw(light_layer)
+        # 2. Light patches — stamp pre-rendered glow sprites (no per-frame blur)
         for lp in self._light_patches:
             lx = (lp['x'] + lp['speed'] * t) % (w + lp['rx'] * 2) - lp['rx']
             ly = lp['y'] + math.sin(t * 0.18 + lp['phase']) * 12
-            pulse = 0.4 + 0.6 * math.sin(t * 0.25 + lp['phase'] * 2)
-            alpha = int(14 * lp['intensity'] * pulse)
-            rx = int(lp['rx'] + math.sin(t * 0.13 + lp['phase']) * 18)
-            ry = int(lp['ry'] + math.sin(t * 0.17 + lp['phase']) * 7)
-            light_draw.ellipse(
-                [int(lx) - rx, int(ly) - ry, int(lx) + rx, int(ly) + ry],
-                fill=(110, 120, 150, alpha))
-        light_layer = light_layer.filter(ImageFilter.GaussianBlur(6))
-        scene = engine.additive_composite(scene, light_layer)
+            engine.stamp_glow(scene, int(lx), int(ly), lp['sprite'])
 
-        # 4. Cloud layers back-to-front -- volumetric sprites
+        # 3. Cloud layers back-to-front — use pre-blurred sprites directly
         for cfg, clouds in self._cloud_layers:
-            cloud_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
             for cloud in clouds:
                 cx = ((cloud['x'] + cloud['speed'] * t)
                       % (w + cloud['cw'] + 200) - cloud['cw'] - 100)
                 cy = cloud['y'] + math.sin(t * 0.10 + cloud['phase']) * 7
-                sprite = engine.render_cloud_sprite(
-                    int(cloud['cw']), int(cloud['ch']),
-                    cfg['color'], cfg['alpha'], cloud['seed'])
+                sprite = cloud['_sprite']
                 px, py = int(cx), int(cy)
                 if (px + sprite.size[0] > 0 and px < w
                         and py + sprite.size[1] > 0 and py < h):
-                    cloud_layer.alpha_composite(sprite, dest=(px, py))
-            if cfg['blur'] > 0:
-                cloud_layer = cloud_layer.filter(
-                    ImageFilter.GaussianBlur(cfg['blur']))
-            scene.alpha_composite(cloud_layer)
+                    scene.alpha_composite(sprite, dest=(px, py))
 
         # 5. Rain particles -- time-based update for smooth motion
         if not hasattr(self, '_last_t'):
             self._last_t = t
         dt = min(t - self._last_t, 0.2)  # cap at 200ms to prevent jumps
         self._last_t = t
+        dt_scale = dt * 15.0  # normalize to ~1.0 at the original 15fps
         pool.update(dt=max(dt, 0.01) * 8.0)  # scale to match velocity units
-        rain_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        rain_draw = ImageDraw.Draw(rain_layer)
+        rain_draw = ImageDraw.Draw(scene)
 
         for i in range(pool.max):
             if pool.y[i] > h or pool.x[i] < -20:
-                gx = float(pool.x[i])
-                self._maybe_splash(gx)
-                self._maybe_ripple(gx)
+                # Drop hit ground — splash and ripple
+                if pool.y[i] > h:
+                    self._maybe_splash(float(pool.x[i]), float(pool.depth[i]))
                 self._respawn_drop(i)
                 continue
 
@@ -252,36 +238,32 @@ class RainScene(BaseScene):
                 [(int(mid_x), int(mid_y)), (int(x2), int(y2))],
                 fill=(*head_c, alpha), width=w_px)
 
-        scene.alpha_composite(rain_layer)
-
         # 6. Splash particles -- tiny arcing ellipses with gravity
-        splash_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        splash_draw = ImageDraw.Draw(splash_layer)
+        splash_draw = ImageDraw.Draw(scene)
         alive_splashes = []
         for sp in self._splashes:
-            sp['x'] += sp['vx']
-            sp['y'] += sp['vy']
-            sp['vy'] += sp['gravity']
-            sp['life'] -= 1
+            sp['x'] += sp['vx'] * dt_scale
+            sp['y'] += sp['vy'] * dt_scale
+            sp['vy'] += sp['gravity'] * dt_scale
+            sp['life'] -= dt_scale
             if sp['life'] <= 0:
                 continue
             alive_splashes.append(sp)
             frac = sp['life'] / sp['max_life']
-            a = int(160 * frac)
+            a = int(220 * frac)
             sz = max(1, int(sp['size'] * frac * 2))
             sx, sy = int(sp['x']), int(sp['y'])
+            # Bright white-blue splash droplet
             splash_draw.ellipse(
                 [sx - sz, sy - sz, sx + sz, sy + sz],
-                fill=(140, 160, 210, a))
+                fill=(180, 200, 255, a))
         self._splashes = alive_splashes
-        scene.alpha_composite(splash_layer)
 
         # 7. Puddle ripple rings -- expanding flat ellipse outlines
-        ripple_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        ripple_draw = ImageDraw.Draw(ripple_layer)
+        ripple_draw = ImageDraw.Draw(scene)
         alive_ripples = []
         for rp in self._ripples:
-            rp['radius'] += rp['expand_speed']
+            rp['radius'] += rp['expand_speed'] * dt_scale
             rp['life'] = max(0.0, 1.0 - rp['radius'] / rp['max_radius'])
             if rp['life'] <= 0:
                 continue
@@ -292,53 +274,17 @@ class RainScene(BaseScene):
             cx_r, cy_r = int(rp['x']), int(rp['y'])
             ripple_draw.ellipse(
                 [cx_r - rx, cy_r - ry, cx_r + rx, cy_r + ry],
-                outline=(90, 120, 185, a), width=1)
+                outline=(120, 150, 220, a), width=1)
         self._ripples = alive_ripples
-        scene.alpha_composite(ripple_layer)
 
-        # 8. Wet ground reflection -- flip bottom strip, darken heavily
-        strip_h = 35
-        strip_top = h - strip_h
-        strip = scene.crop((0, strip_top, w, h))
-        strip = strip.transpose(Image.FLIP_TOP_BOTTOM)
-        strip_arr = np.array(strip, dtype=np.float32)
-        strip_arr[..., :3] *= 0.25
-        strip_arr[..., 3] = 25
-        strip = Image.fromarray(np.clip(strip_arr, 0, 255).astype(np.uint8), 'RGBA')
-        refl_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        refl_layer.paste(strip, (0, strip_top))
-        scene.alpha_composite(refl_layer)
-
-        # 9. Ground mist -- soft ellipse puffs, breathing alpha, blurred
-        mist_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        mist_draw = ImageDraw.Draw(mist_layer)
+        # 8. Ground mist — stamp pre-rendered glow sprites (no per-frame blur)
         for puff in self._mist_puffs:
             mx = (puff['x'] + puff['speed'] * t) % (w + puff['rx'] * 2) - puff['rx']
             my = puff['y'] + math.sin(t * 0.22 + puff['phase']) * 5
-            breath = 0.65 + 0.35 * math.sin(t * 0.18 + puff['phase'] * 1.5)
-            ma = int(puff['alpha'] * breath)
-            engine.draw_soft_ellipse(
-                mist_draw, int(mx), int(my),
-                int(puff['rx']), int(puff['ry']),
-                (55, 62, 82), ma)
-        mist_layer = mist_layer.filter(ImageFilter.GaussianBlur(4))
-        scene.alpha_composite(mist_layer)
+            engine.stamp_glow(scene, int(mx), int(my), puff['sprite'])
 
-        # 10. Bottom atmosphere -- gradient fade at very bottom
-        bottom_h = 45
-        bottom_arr = np.zeros((h, w, 4), dtype=np.uint8)
-        for y in range(h - bottom_h, h):
-            frac = (y - (h - bottom_h)) / bottom_h
-            bottom_arr[y, :, 0] = 30
-            bottom_arr[y, :, 1] = 35
-            bottom_arr[y, :, 2] = 50
-            bottom_arr[y, :, 3] = int(frac ** 1.5 * 40)
-        scene.alpha_composite(Image.fromarray(bottom_arr, 'RGBA'))
-
-        # 11. Vignette -- pre-computed, 0.18 strength
-        arr = np.array(scene, dtype=np.float32)
-        arr[..., :3] *= self._vignette[..., np.newaxis]
-        scene = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), 'RGBA')
+        # 11. Vignette -- pre-rendered RGBA overlay
+        scene.alpha_composite(self._vignette_img)
 
         return scene
 

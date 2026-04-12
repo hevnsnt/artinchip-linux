@@ -6,7 +6,8 @@ import socket
 import subprocess
 import time
 from collections import Counter
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from modes.glow import glow_accent_line, glow_line
 
 # --- Color palette (vivid, saturated — matching sysmon dashboard) ---
 BG          = (5, 7, 12)
@@ -338,6 +339,11 @@ def _draw_mini_bar_chart(img, draw, x, y, w, h, state_counts, total):
         seg_w = max(1, int(w * other_count / total))
         bd.rectangle([cx, 0, cx + seg_w, h], fill=PURPLE + (255,))
 
+    pad = 8
+    glow_layer = Image.new('RGBA', (w + pad * 2, h + pad * 2), (0, 0, 0, 0))
+    glow_layer.paste(bar_layer, (pad, pad), bar_layer)
+    glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(radius=6))
+    img.paste(glow_layer, (x - pad, y - pad), glow_layer)
     img.paste(bar_layer, (x, y), bar_layer)
 
 
@@ -361,13 +367,15 @@ def render_frame(w=1920, h=440):
 
     # --- Header with gradient fill and glowing accent line ---
     header_h = 44
-    top_c = (14, 18, 32)
-    bot_c = (8, 11, 22)
-    draw.rectangle([0, 0, w, header_h], fill=(11, 14, 27))
+    for row in range(header_h):
+        t = row / max(header_h - 1, 1)
+        c = _lerp_color((14, 18, 32), (8, 11, 22), t)
+        draw.line([(0, row), (w, row)], fill=c)
 
     # Accent line under header
-    draw.rectangle([0, header_h - 2, w, header_h], fill=ACCENT)
-    draw.rectangle([0, header_h, w, header_h + 2], fill=ACCENT + (50,))
+    accent = glow_accent_line(w, ACCENT)
+    img.paste(accent, (0, header_h - 2), accent)
+    draw = ImageDraw.Draw(img)
 
     draw.text((pad_x, 11), "NETWORK CONNECTIONS", fill=ACCENT, font=title_font)
 
@@ -377,7 +385,10 @@ def render_frame(w=1920, h=440):
 
     summary_y = header_h + 4
     summary_h = 24
-    draw.rectangle([0, summary_y, w, summary_y + summary_h], fill=(10, 13, 24))
+    for row in range(summary_h):
+        t = row / max(summary_h - 1, 1)
+        c = _lerp_color((12, 16, 28), (8, 11, 20), t)
+        draw.line([(0, summary_y + row), (w, summary_y + row)], fill=c)
 
     # Draw total count first
     total_text = f"{total} connections"
@@ -418,7 +429,10 @@ def render_frame(w=1920, h=440):
     # --- Column header ---
     col_header_y = legend_y + legend_h + 8
     col_header_h = 24
-    draw.rectangle([0, col_header_y, w, col_header_y + col_header_h], fill=(10, 13, 24))
+    for row in range(col_header_h):
+        t = row / max(col_header_h - 1, 1)
+        c = _lerp_color((12, 16, 28), (8, 11, 20), t)
+        draw.line([(0, col_header_y + row), (w, col_header_y + row)], fill=c)
 
     # Separator line under column labels
     sep_y = col_header_y + col_header_h

@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 from PIL import Image, ImageDraw, ImageFont
+from modes.glow import paste_glow_dot, glow_accent_line
 
 # ── Colors (vivid, matches other modes) ────────────────────────────
 BG          = (5, 7, 12)
@@ -93,11 +94,7 @@ def _get_scanlines(w, h):
     return _scanline_cache[key]
 
 def _draw_glow_dot(img, cx, cy, r, color):
-    draw = ImageDraw.Draw(img)
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color)
-    bright = tuple(min(255, c + 80) for c in color)
-    core = max(1, r - 2)
-    draw.ellipse([cx - core, cy - core, cx + core, cy + core], fill=bright)
+    paste_glow_dot(img, cx, cy, r, color)
 
 # ── Device type guessing ───────────────────────────────────────────
 # MAC vendor keywords → (type, color)
@@ -664,11 +661,15 @@ def render_frame(w=1920, h=440):
 
     # ── Header ──
     header_h = 44
-    draw.rectangle([0, 0, w, header_h], fill=(11, 14, 27))
+    for row in range(header_h):
+        t = row / max(header_h - 1, 1)
+        c = _lerp_color((14, 18, 32), (8, 11, 22), t)
+        draw.line([(0, row), (w, row)], fill=c)
 
     # Accent line
-    draw.rectangle([0, header_h - 2, w, header_h], fill=ACCENT)
-    draw.rectangle([0, header_h, w, header_h + 2], fill=ACCENT + (50,))
+    accent = glow_accent_line(w, ACCENT)
+    img.paste(accent, (0, header_h - 2), accent)
+    draw = ImageDraw.Draw(img)
     draw.text((pad_x, 10), "NETWORK DEVICES", fill=ACCENT, font=font(24))
 
     # Status — show scanning indicator prominently
@@ -707,7 +708,10 @@ def render_frame(w=1920, h=440):
     # ── Column header ──
     col_y = header_h + 4
     col_h = 22
-    draw.rectangle([0, col_y, w, col_y + col_h], fill=(10, 13, 24))
+    for row in range(col_h):
+        t = row / max(col_h - 1, 1)
+        c = _lerp_color((12, 16, 28), (8, 11, 20), t)
+        draw.line([(0, col_y + row), (w, col_y + row)], fill=c)
 
     # Column headers (only shown for first column, positions are relative)
     draw.text((pad_x + 26, col_y + 2), "IP ADDRESS", fill=TEXT_DIM, font=font(14))

@@ -8,6 +8,7 @@ Designed for 1920x440 stretched bar LCDs.
 
 import time
 from PIL import Image, ImageDraw, ImageFont
+from modes.glow import paste_hero_text, glow_accent_line, glow_side_edge, glow_line
 
 # ── Colors (vivid, saturated — matching sysmon dashboard) ──────────
 BG          = (5, 7, 12)
@@ -202,6 +203,11 @@ def _draw_sparkline(draw, img, x, y, w, h, data, color):
         top_fill.append((px, min(py + band_h, y + h)))
     draw.polygon(top_fill, fill=brighter)
 
+    # Cached glow on the line
+    rel_points = [(px - x, py - y) for px, py in points]
+    glow_img, pad = glow_line(rel_points, w, h, color)
+    img.paste(glow_img, (x - pad, y - pad), glow_img)
+
     # Sharp bright line on top
     draw.line(points, fill=tuple(min(255, c + 40) for c in color), width=2)
 
@@ -220,7 +226,7 @@ def _format_price(price):
 
 def _draw_hero_text(draw, img, x, y, text, color, size):
     f = font(size)
-    draw.text((x, y), text, fill=color, font=f)
+    paste_hero_text(draw, img, x, y, text, color, f)
 
 def _draw_coin_card(draw, img, x, y, w, h, coin_id, symbol):
     """Draw a single coin card with gradient panel, glowing accents, and sparkline."""
@@ -239,10 +245,20 @@ def _draw_coin_card(draw, img, x, y, w, h, coin_id, symbol):
         perf_color = ACCENT
 
     # ── Card background ──
-    draw.rectangle([x, y, x + w, y + h], fill=(11, 14, 25))
+    top_c = (14, 18, 30)
+    bot_c = (8, 11, 20)
+    for row in range(h):
+        t = row / max(h - 1, 1)
+        c = _lerp_color(top_c, bot_c, t)
+        draw.line([(x, y + row), (x + w, y + row)], fill=c)
 
     # ── Top accent line (colored by performance) ──
-    draw.rectangle([x, y, x + w, y + 2], fill=perf_color)
+    accent = glow_accent_line(w, perf_color)
+    img.paste(accent, (x, y - 2), accent)
+
+    # ── Left edge glow ──
+    side = glow_side_edge(h, perf_color)
+    img.paste(side, (x - 6, y), side)
 
     # ── Symbol (bold, top-left) ──
     draw.text((x + pad, y + 10), symbol, fill=ACCENT, font=font(38))

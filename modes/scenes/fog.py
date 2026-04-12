@@ -1,7 +1,7 @@
 import math
 import random
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 from scenes.base import BaseScene
 from scenes import engine
 
@@ -71,7 +71,7 @@ class FogScene(BaseScene):
             arr[fog_mask, 3] = alpha_map[fog_mask]
 
         fog_density_layer = Image.fromarray(arr, 'RGBA')
-        fog_density_layer = fog_density_layer.filter(ImageFilter.GaussianBlur(2))
+        fog_density_layer = engine.bloom(fog_density_layer, radius=4, intensity=1.0, downsample=4)
         base = Image.alpha_composite(base, fog_density_layer)
 
         # 3. 3-layer parallax fog bands
@@ -97,7 +97,7 @@ class FogScene(BaseScene):
                 )
 
             if blur_by_layer[li] > 0:
-                band_layer = band_layer.filter(ImageFilter.GaussianBlur(blur_by_layer[li]))
+                band_layer = engine.bloom(band_layer, radius=blur_by_layer[li] * 2, intensity=1.0, downsample=4)
             base = Image.alpha_composite(base, band_layer)
 
         # 4. Optional silhouettes -- very faint dark shapes near bottom
@@ -117,7 +117,7 @@ class FogScene(BaseScene):
                     (sx + sw, sy + sh),
                 ], fill=fill)
 
-        sil_layer = sil_layer.filter(ImageFilter.GaussianBlur(3))
+        sil_layer = engine.bloom(sil_layer, radius=6, intensity=1.0, downsample=4)
         base = Image.alpha_composite(base, sil_layer)
 
         # 5. Color grade

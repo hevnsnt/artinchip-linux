@@ -510,18 +510,13 @@ def draw_text_shadow(draw: ImageDraw.Draw, x: int, y: int, text: str,
                      fill: tuple, f: ImageFont.FreeTypeFont,
                      shadow_offset: int = 3,
                      shadow_color: tuple = (0, 0, 0)):
-    """Draw text with a thick dark shadow for readability over busy scenes."""
+    """Draw text with drop shadow and outline for readability over busy scenes."""
     sc = shadow_color
-    for dx in range(1, shadow_offset + 1):
-        for dy in range(1, shadow_offset + 1):
-            draw.text((x + dx, y + dy), text, fill=sc, font=f)
-    # Extra shadow passes for thickness
-    for dx in (-1, 0, 1):
-        for dy in (-1, 0, 1):
-            if dx == 0 and dy == 0:
-                continue
-            draw.text((x + dx, y + dy), text, fill=sc, font=f)
-    draw.text((x, y), text, fill=fill, font=f)
+    # Drop shadow at offset (depth effect)
+    draw.text((x + shadow_offset, y + shadow_offset), text, fill=sc, font=f)
+    # Text with built-in stroke for outline (single C-level call)
+    draw.text((x, y), text, fill=fill, font=f,
+              stroke_width=2, stroke_fill=sc)
 
 
 # ---------------------------------------------------------------------------

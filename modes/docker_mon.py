@@ -3,6 +3,7 @@
 import subprocess
 import time
 from PIL import Image, ImageDraw, ImageFont
+from modes.glow import paste_glow_dot, paste_glow_bar, glow_accent_line
 
 # --- Color palette (vivid, saturated — matching sysmon dashboard) ---
 BG          = (5, 7, 12)
@@ -212,6 +213,12 @@ def _draw_bar(draw, img, x, y, w, h, pct, color):
     if fill_w <= 0:
         return
 
+    # Cached glow halo
+    from modes.glow import glow_rect
+    glow, pad = glow_rect(fill_w, h, color, alpha=100, radius=8)
+    if glow:
+        img.paste(glow, (x - pad, y - pad), glow)
+
     # Gradient fill: dim left -> bright right
     for col in range(fill_w):
         t = col / max(fill_w - 1, 1)
@@ -230,11 +237,7 @@ def _draw_bar(draw, img, x, y, w, h, pct, color):
 
 # --- Status dot ---
 def _draw_glow_dot(img, cx, cy, r, color):
-    draw = ImageDraw.Draw(img)
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color)
-    bright = tuple(min(255, c + 80) for c in color)
-    core_r = max(1, r - 2)
-    draw.ellipse([cx - core_r, cy - core_r, cx + core_r, cy + core_r], fill=bright)
+    paste_glow_dot(img, cx, cy, r, color)
 
 
 def render_frame(w=1920, h=440):
@@ -255,11 +258,16 @@ def render_frame(w=1920, h=440):
 
     # --- Header with gradient fill and glowing accent line ---
     header_h = 44
-    draw.rectangle([0, 0, w, header_h], fill=(11, 14, 27))
+    top_c = (14, 18, 32)
+    bot_c = (8, 11, 22)
+    for row in range(header_h):
+        t = row / max(header_h - 1, 1)
+        c = _lerp_color(top_c, bot_c, t)
+        draw.line([(0, row), (w, row)], fill=c)
 
     # Accent line under header
-    draw.rectangle([0, header_h - 2, w, header_h], fill=ACCENT)
-    draw.rectangle([0, header_h, w, header_h + 2], fill=ACCENT + (50,))
+    accent = glow_accent_line(w, ACCENT)
+    img.paste(accent, (0, header_h - 2), accent)
 
     draw.text((pad_x, 11), "DOCKER CONTAINERS", fill=ACCENT, font=title_font)
 
@@ -301,7 +309,10 @@ def render_frame(w=1920, h=440):
     # --- Column labels row ---
     col_label_y = header_h + 4
     col_label_h = 22
-    draw.rectangle([0, col_label_y, w, col_label_y + col_label_h], fill=(10, 13, 24))
+    for row in range(col_label_h):
+        t = row / max(col_label_h - 1, 1)
+        c = _lerp_color((12, 16, 28), (8, 11, 20), t)
+        draw.line([(0, col_label_y + row), (w, col_label_y + row)], fill=c)
 
     # Column positions — fit within 1920px without overlapping
     col_status_x = pad_x

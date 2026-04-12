@@ -12,6 +12,7 @@ import random
 import time
 import threading
 from PIL import Image, ImageDraw, ImageFont
+from modes.glow import paste_hero_text, glow_arc, glow_line
 
 # ── Colors ─────────────────────────────────────────────────────────
 BG          = (5, 7, 12)
@@ -82,13 +83,21 @@ def _get_scanlines(w, h):
 
 def _hero(draw, img, x, y, text, color, size):
     f = font(size)
-    draw.text((x, y), text, fill=color, font=f)
+    paste_hero_text(draw, img, x, y, text, color, f, radius=10)
 
 def _draw_arc(draw, img, cx, cy, radius, thickness, pct, color, bg_color=(20, 25, 38)):
     bbox = [cx - radius, cy - radius, cx + radius, cy + radius]
     draw.arc(bbox, 135, 405, fill=bg_color, width=thickness)
     if pct > 0:
         end = 135 + int(270 * min(pct, 100) / 100)
+        # Cached wide glow
+        glow_img, gpad = glow_arc(radius, thickness, 135, end, color,
+                                   alpha=70, blur_radius=10, extra_width=14)
+        img.paste(glow_img, (cx - radius - gpad, cy - radius - gpad), glow_img)
+        # Cached core glow
+        glow2, gpad2 = glow_arc(radius, thickness, 135, end, color,
+                                 alpha=180, blur_radius=4, extra_width=3)
+        img.paste(glow2, (cx - radius - gpad2, cy - radius - gpad2), glow2)
         draw.arc(bbox, 135, end, fill=color, width=thickness)
         angle_rad = math.radians(end)
         tip_x = cx + int(radius * math.cos(angle_rad))
@@ -418,6 +427,10 @@ def render_frame(w=1920, h=440):
             pts.append((px2, py2))
         fill_pts = pts + [(sp_x + sp_w, sp_y + sp_h), (sp_x, sp_y + sp_h)]
         draw.polygon(fill_pts, fill=(0, 30, 50))
+        rel_pts = [(p[0] - sp_x, p[1] - sp_y) for p in pts]
+        glow_img, gpad = glow_line(rel_pts, sp_w, sp_h, DL_COLOR)
+        img.paste(glow_img, (sp_x - gpad, sp_y - gpad), glow_img)
+        draw = ImageDraw.Draw(img)
         draw.line(pts, fill=DL_COLOR, width=2)
     else:
         draw.rectangle([sp_x, sp_y, sp_x + sp_w, sp_y + sp_h], fill=(6, 8, 14))
@@ -437,6 +450,10 @@ def render_frame(w=1920, h=440):
             pts.append((px2, py2))
         fill_pts = pts + [(sp_x + sp_w, sp_y2 + sp_h), (sp_x, sp_y2 + sp_h)]
         draw.polygon(fill_pts, fill=(25, 10, 45))
+        rel_pts = [(p[0] - sp_x, p[1] - sp_y2) for p in pts]
+        glow_img, gpad = glow_line(rel_pts, sp_w, sp_h, UL_COLOR)
+        img.paste(glow_img, (sp_x - gpad, sp_y2 - gpad), glow_img)
+        draw = ImageDraw.Draw(img)
         draw.line(pts, fill=UL_COLOR, width=2)
     else:
         draw.rectangle([sp_x, sp_y2, sp_x + sp_w, sp_y2 + sp_h], fill=(6, 8, 14))

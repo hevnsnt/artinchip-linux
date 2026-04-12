@@ -15,6 +15,8 @@ import re
 import time
 import subprocess
 from PIL import Image, ImageDraw, ImageFont
+from modes.glow import (paste_hero_text, paste_glow_bar, paste_panel,
+                         glow_accent_line, glow_arc, glow_line, glow_rect)
 
 # ── Colors (vivid, saturated for maximum impact) ──────────────────
 BG          = (5, 7, 12)
@@ -377,17 +379,7 @@ def _draw_gradient_bg(img, w, h):
 # ── Panel drawing ──────────────────────────────────────────────────
 def draw_panel(draw, img, x, y, w, h, title=""):
     """Draw a panel with gradient fill, glowing edges, and accent line."""
-    # Panel body: vertical gradient
-    top_c = (14, 18, 30)
-    bot_c = (8, 11, 20)
-    for row in range(h):
-        t = row / max(h - 1, 1)
-        c = _lerp_color(top_c, bot_c, t)
-        draw.line([(x, y + row), (x + w, y + row)], fill=c)
-
-    # Top accent line — simple rectangle, no blur
-    draw.rectangle([x, y, x + w, y + 2], fill=ACCENT)
-
+    paste_panel(draw, img, x, y, w, h, ACCENT, _lerp_color)
     if title:
         draw.text((x + 10, y + 6), title, fill=ACCENT, font=font(13))
 
@@ -399,6 +391,10 @@ def draw_glow_bar(draw, img, x, y, w, h, pct, color):
     fill_w = max(0, int(w * min(pct, 100) / 100))
     if fill_w <= 0:
         return
+
+    glow, pad = glow_rect(fill_w, h, color, alpha=100, radius=10)
+    if glow:
+        img.paste(glow, (x - pad, y - pad), glow)
 
     # Gradient fill: dim at left, bright at right
     for col in range(fill_w):
@@ -425,6 +421,15 @@ def draw_arc_gauge(draw, img, cx, cy, radius, thickness, pct, color):
     # Filled arc with glow
     end_angle = 200 + int(140 * min(pct, 100) / 100)
     if pct > 0:
+        # Cached atmospheric glow
+        glow_img, gpad = glow_arc(radius, thickness, 200, end_angle, color,
+                                   alpha=80, blur_radius=12, extra_width=16)
+        img.paste(glow_img, (cx - radius - gpad, cy - radius - gpad), glow_img)
+        # Cached core glow
+        glow2, gpad2 = glow_arc(radius, thickness, 200, end_angle, color,
+                                 alpha=160, blur_radius=5, extra_width=4)
+        img.paste(glow2, (cx - radius - gpad2, cy - radius - gpad2), glow2)
+
         # Sharp filled arc
         draw.arc(bbox, 200, end_angle, fill=color, width=thickness)
 
@@ -477,6 +482,10 @@ def draw_sparkline(draw, img, x, y, w, h, data, color, max_val=None):
         top_fill.append((px, min(py + band_h, y + h)))
     draw.polygon(top_fill, fill=brighter)
 
+    rel_points = [(px - x, py - y) for px, py in points]
+    glow_img, gpad = glow_line(rel_points, w, h, color, alpha=140, width=6, radius=7)
+    img.paste(glow_img, (x - gpad, y - gpad), glow_img)
+
     # Sharp bright line
     draw.line(points, fill=tuple(min(255, c + 40) for c in color), width=2)
 
@@ -507,9 +516,9 @@ def draw_core_bars(draw, img, x, y, w, h, core_pcts):
 
 # ── Hero text with glow ────────────────────────────────────────────
 def draw_hero_text(draw, img, x, y, text, color, size):
-    """Draw large text (no glow)."""
+    """Draw large text with cached glow."""
     f = font(size)
-    draw.text((x, y), text, fill=color, font=f)
+    paste_hero_text(draw, img, x, y, text, color, f)
 
 # ── Main render ─────────────────────────────────────────────────────
 def render_frame(w=1920, h=440):
@@ -744,8 +753,9 @@ def render_frame(w=1920, h=440):
 
     # System info section
     sy = py0 + 72 + net_spark_h * 2 + 16
-    # Thin accent divider — simple line, no blur
-    draw.rectangle([p5x + 8, sy, p5x + p5w - 8, sy + 1], fill=ACCENT + (120,))
+    # Thin accent divider with glow
+    div_accent = glow_accent_line(p5w - 16, ACCENT, alpha=120, radius=2)
+    img.paste(div_accent, (p5x + 8, sy - 2), div_accent)
 
     draw.text((p5x + 10, sy + 6), "SYSTEM", fill=ACCENT, font=font(13))
 
@@ -765,9 +775,9 @@ def render_frame(w=1920, h=440):
     draw.text((p5x + 72, info_y + row_gap * 2), time.strftime("%Y-%m-%d %H:%M:%S"),
               fill=TEXT, font=font(14))
 
-    # Bottom accent line — simple rectangles, no blur
-    draw.rectangle([0, h - 8, w, h - 6], fill=ACCENT + (160,))
-    draw.rectangle([0, h - 6, w, h - 4], fill=ACCENT + (40,))
+    # Bottom accent line with glow
+    bottom_accent = glow_accent_line(w, ACCENT, alpha=160, radius=4)
+    img.paste(bottom_accent, (0, h - 12), bottom_accent)
 
     # Scanline overlay — subtle CRT/HUD texture
     scanlines = _get_scanlines(w, h)

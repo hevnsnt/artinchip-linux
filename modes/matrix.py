@@ -9,7 +9,7 @@ import socket
 import subprocess
 import time
 from datetime import datetime
-from PIL import Image, ImageDraw, ImageEnhance, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 # --- Visual style (dark theme) ---
 BG = (10, 12, 18)
@@ -70,6 +70,16 @@ _char_pool = _katakana + _latin + _digits + _symbols
 
 def _random_char():
     return random.choice(_char_pool)
+
+
+def _cheap_bloom(img, strength=0.35):
+    """Fast bloom: downscale, blur at small radius, upscale, blend."""
+    w, h = img.size
+    small = img.resize((w // 4, h // 4), Image.BOX)
+    small = small.filter(ImageFilter.GaussianBlur(radius=2))
+    bloom = small.resize((w, h), Image.BILINEAR)
+    bloom = ImageEnhance.Brightness(bloom).enhance(strength)
+    return ImageChops.add(img, bloom)
 
 
 class Column:
@@ -206,6 +216,7 @@ def render_frame(w=1920, h=440):
 
     # --- Dim rain to background level ---
     img = ImageEnhance.Brightness(img).enhance(0.55)
+    img = _cheap_bloom(img)
 
     img_rgba = img.convert('RGBA')
     draw = ImageDraw.Draw(img_rgba)

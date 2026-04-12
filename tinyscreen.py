@@ -1059,7 +1059,7 @@ def _mode_fps(name):
         'ticker':     1/30,  # 30fps — smooth scroll
         'nowplaying': 1/10,  # 10fps — progress bar updates
         'sysmon':     1/2,   # 2fps  — sensor data doesn't change faster
-        'clock':      1/15,  # 15fps — animated weather icon
+        'clock':      1/30,  # 30fps — smooth rain and weather animations
         'docker':     1/2,   # 2fps  — container stats refresh
         'netmon':     1/2,   # 2fps  — connection updates
         'lanmap':     1/2,   # 2fps  — network scan display
@@ -1082,11 +1082,14 @@ def mode_single(disp, name, quality, extra_args=None):
     log(f"Mode '{name}' running ({1/interval:.0f}fps, quality={quality}, {rw}x{rh})")
     try:
         while True:
+            t0 = time.monotonic()
             img = mod.render_frame(rw, rh)
             jpeg = image_to_jpeg(img, quality)
             if not disp.send(jpeg):
                 disp.wait_for_device()
-            time.sleep(interval)
+            remaining = interval - (time.monotonic() - t0)
+            if remaining > 0:
+                time.sleep(remaining)
     finally:
         _cleanup_mode(mod)
 
@@ -1105,11 +1108,14 @@ def mode_rotate(disp, mode_names, delay, quality):
             t_end = time.monotonic() + delay
             try:
                 while time.monotonic() < t_end:
+                    t0 = time.monotonic()
                     img = mod.render_frame(rw, rh)
                     jpeg = image_to_jpeg(img, quality)
                     if not disp.send(jpeg):
                         disp.wait_for_device()
-                    time.sleep(interval)
+                    remaining = interval - (time.monotonic() - t0)
+                    if remaining > 0:
+                        time.sleep(remaining)
             finally:
                 _cleanup_mode(mod)
 

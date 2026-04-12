@@ -9,7 +9,7 @@ import math
 import random
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 from scenes.base import BaseScene
 from scenes import engine
 
@@ -139,7 +139,7 @@ class SnowScene(BaseScene):
                         and py + sprite.size[1] > 0 and py < h):
                     layer.alpha_composite(sprite, dest=(px, py))
             if cfg['blur'] > 0:
-                layer = layer.filter(ImageFilter.GaussianBlur(cfg['blur']))
+                layer = engine.bloom(layer, radius=cfg['blur'] * 2, intensity=1.0, downsample=4)
             scene.alpha_composite(layer)
 
         # 4. Snowflakes -- update positions with sine-wave drift
@@ -253,7 +253,7 @@ class SnowScene(BaseScene):
                 mist_draw, int(mx), int(my),
                 int(puff['rx']), int(puff['ry']),
                 (140, 148, 165), ma)
-        mist_layer = mist_layer.filter(ImageFilter.GaussianBlur(3))
+        mist_layer = engine.bloom(mist_layer, radius=6, intensity=1.0, downsample=4)
         scene.alpha_composite(mist_layer)
 
         # 8. Bottom atmosphere -- soft white-blue gradient (cool tone)

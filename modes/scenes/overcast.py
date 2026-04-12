@@ -131,7 +131,7 @@ class OvercastScene(BaseScene):
             light_draw.ellipse(
                 [int(lx) - rx, int(ly) - ry, int(lx) + rx, int(ly) + ry],
                 fill=(140, 135, 115, alpha))
-        light_layer = light_layer.filter(ImageFilter.GaussianBlur(8))
+        light_layer = engine.bloom(light_layer, radius=16, intensity=1.0, downsample=4)
         scene = engine.additive_composite(scene, light_layer)
 
         # === CLOUD LAYERS (back to front) ===
@@ -176,7 +176,7 @@ class OvercastScene(BaseScene):
                         [(sx, streak_top), (sx - wind_offset, h)],
                         fill=(80, 90, 120, va), width=1)
 
-        rain_layer = rain_layer.filter(ImageFilter.GaussianBlur(2))
+        rain_layer = engine.bloom(rain_layer, radius=4, intensity=1.0, downsample=4)
         scene.alpha_composite(rain_layer)
 
         # === GROUND MIST === (atmospheric low fog)
@@ -192,7 +192,7 @@ class OvercastScene(BaseScene):
                 mist_draw, int(mx), int(my),
                 int(puff['rx']), int(puff['ry']),
                 (75, 80, 95), ma)
-        mist_layer = mist_layer.filter(ImageFilter.GaussianBlur(4))
+        mist_layer = engine.bloom(mist_layer, radius=8, intensity=1.0, downsample=4)
         scene.alpha_composite(mist_layer)
 
         # === BOTTOM ATMOSPHERE === (gradient fade at very bottom)

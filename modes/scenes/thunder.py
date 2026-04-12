@@ -122,6 +122,13 @@ class ThunderScene(BaseScene):
     def render(self, t, weather_data):
         w, h = self.w, self.h
 
+        # Frame delta for time-based physics
+        if not hasattr(self, '_last_t'):
+            self._last_t = t
+        dt = min(t - self._last_t, 0.2)  # cap at 200ms to prevent jumps
+        self._last_t = t
+        dt_scale = dt * 15.0  # normalize to ~1.0 at original 15fps
+
         # 1. Copy gradient background
         scene = self._gradient.copy()
 
@@ -200,6 +207,7 @@ class ThunderScene(BaseScene):
                         'x': x, 'y': h - random.uniform(5, 25),
                         'vx': random.uniform(-1.5, 1.5),
                         'vy': random.uniform(-3, -1),
+                        'gravity': 0.5,
                         'life': 5, 'max_life': 5,
                         'size': random.uniform(1, 3),
                     })
@@ -246,10 +254,10 @@ class ThunderScene(BaseScene):
         splash_draw = ImageDraw.Draw(scene)
         remaining = []
         for sp in self._splashes:
-            sp['life'] -= 1
-            sp['x'] += sp['vx']
-            sp['y'] += sp['vy']
-            sp['vy'] += 0.5  # gravity
+            sp['life'] -= dt_scale
+            sp['x'] += sp['vx'] * dt_scale
+            sp['y'] += sp['vy'] * dt_scale
+            sp['vy'] += sp['gravity'] * dt_scale
             if sp['life'] > 0:
                 frac = sp['life'] / sp['max_life']
                 a = int(120 * frac)
@@ -298,7 +306,7 @@ class ThunderScene(BaseScene):
                 mist_draw, int(mx), int(my),
                 int(puff['rx']), int(puff['ry']),
                 (20, 18, 32), ma)
-        mist_layer = mist_layer.filter(ImageFilter.GaussianBlur(4))
+        mist_layer = engine.bloom(mist_layer, radius=8, intensity=1.0, downsample=4)
         scene.alpha_composite(mist_layer)
 
         # 12. Bottom atmosphere -- dark gradient at base

@@ -9,7 +9,10 @@ Designed for 1920x440 stretched bar LCDs.
 """
 
 import time
+import math
 from PIL import Image, ImageDraw, ImageFont
+from modes.glow import (paste_hero_text, paste_panel, paste_glow_bar,
+                         glow_arc, glow_text, glow_circle)
 
 # ── Colors (vivid, saturated — matching sysmon dashboard) ──────────
 BG          = (5, 7, 12)
@@ -167,12 +170,7 @@ def _get_scanlines(w, h):
 
 # ── Panel drawing ──────────────────────────────────────────────────
 def _draw_panel(draw, img, x, y, w, h, accent_color=ACCENT):
-    """Draw a panel with flat fill and accent top line."""
-    # Panel body: flat fill
-    draw.rectangle([x, y, x + w, y + h], fill=(11, 14, 25))
-
-    # Top accent line
-    draw.rectangle([x, y, x + w, y + 2], fill=accent_color)
+    paste_panel(draw, img, x, y, w, h, accent_color, _lerp_color)
 
 
 # ── Glow bar ───────────────────────────────────────────────────────
@@ -183,6 +181,11 @@ def _draw_bar(draw, img, x, y, w, h, pct, color):
     fill_w = max(0, int(w * min(pct, 100.0) / 100.0))
     if fill_w <= 0:
         return
+
+    from modes.glow import glow_rect
+    glow, pad = glow_rect(fill_w, h, color, alpha=100, radius=8)
+    if glow:
+        img.paste(glow, (x - pad, y - pad), glow)
 
     # Gradient fill: dim left -> bright right
     for col in range(fill_w):
@@ -212,6 +215,8 @@ def _draw_session_dots(img, x, y, count, current_session, dot_size=14, gap=8):
         if i < count:
             # Completed
             color = ACCENT if (i + 1) % LONG_BREAK_EVERY != 0 else CYAN
+            glow, _ = glow_circle(dot_size // 2, color, alpha=60, radius=4)
+            img.paste(glow, (dx - 8, dy - 8), glow)
             draw_ctx = ImageDraw.Draw(img)
             draw_ctx.ellipse([dx, dy, dx + dot_size, dy + dot_size], fill=color + (255,))
             bright = tuple(min(255, c + 80) for c in color)
@@ -221,7 +226,14 @@ def _draw_session_dots(img, x, y, count, current_session, dot_size=14, gap=8):
                              fill=bright + (180,))
         elif i == count:
             # Current — pulsing
+            now = time.monotonic()
+            pulse = 1.0 + 0.15 * math.sin(now * 3.0)
+            r = int(dot_size * pulse / 2)
             inner_color = GREEN if _phase == 'WORK' else CYAN
+            glow, _ = glow_circle(r, inner_color, alpha=50, radius=5)
+            cx_d = dx + dot_size // 2
+            cy_d = dy + dot_size // 2
+            img.paste(glow, (cx_d - r - 10, cy_d - r - 10), glow)
             draw_ctx = ImageDraw.Draw(img)
             draw_ctx.ellipse([dx, dy, dx + dot_size, dy + dot_size],
                              outline=ACCENT + (200,), width=2)
@@ -238,12 +250,20 @@ def _draw_session_dots(img, x, y, count, current_session, dot_size=14, gap=8):
 
 # ── Circular progress with dramatic glow ───────────────────────────
 def _draw_circular_progress(draw, img, cx, cy, radius, pct, color, width=12):
-    """Draw a circular progress arc."""
     bbox = [cx - radius, cy - radius, cx + radius, cy + radius]
     draw.arc(bbox, 0, 360, fill=(25, 30, 45), width=width)
     if pct > 0:
         start = -90
         end = start + (pct / 100) * 360
+        # Cached atmospheric glow
+        glow_img, gpad = glow_arc(radius, width, start, end, color,
+                                   alpha=80, blur_radius=12, extra_width=16)
+        img.paste(glow_img, (cx - radius - gpad, cy - radius - gpad), glow_img)
+        # Cached core glow
+        glow2, gpad2 = glow_arc(radius, width, start, end, color,
+                                 alpha=160, blur_radius=5, extra_width=4)
+        img.paste(glow2, (cx - radius - gpad2, cy - radius - gpad2), glow2)
+        # Sharp arc
         draw.arc(bbox, start, end, fill=color, width=width)
 
 
@@ -374,6 +394,12 @@ def render_frame(w=1920, h=440):
     ty = block_top
     px = ring_cx - pw // 2
     py = block_top + th + gap
+
+    # Cached timer text glow
+    glow_img, gpad, _ = glow_text(timer_str, timer_font, progress_color,
+                                   alpha=120, radius=14)
+    img.paste(glow_img, (tx - gpad, ty - gpad), glow_img)
+    draw = ImageDraw.Draw(img)
 
     # Sharp timer text
     draw.text((tx, ty), timer_str, fill=progress_color, font=timer_font)
