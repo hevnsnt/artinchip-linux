@@ -9,8 +9,7 @@ Designed for 1920x440 stretched bar LCDs.
 """
 
 import time
-import math
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont
 
 # ── Colors (vivid, saturated — matching sysmon dashboard) ──────────
 BG          = (5, 7, 12)
@@ -168,34 +167,12 @@ def _get_scanlines(w, h):
 
 # ── Panel drawing ──────────────────────────────────────────────────
 def _draw_panel(draw, img, x, y, w, h, accent_color=ACCENT):
-    """Draw a panel with gradient fill, glowing accent top line, and side edges."""
-    # Panel body: vertical gradient
-    top_c = (14, 18, 30)
-    bot_c = (8, 11, 20)
-    for row in range(h):
-        t = row / max(h - 1, 1)
-        c = _lerp_color(top_c, bot_c, t)
-        draw.line([(x, y + row), (x + w, y + row)], fill=c)
+    """Draw a panel with flat fill and accent top line."""
+    # Panel body: flat fill
+    draw.rectangle([x, y, x + w, y + h], fill=(11, 14, 25))
 
-    # Glowing top accent line
-    glow_w = w
-    glow_h = 20
-    glow = Image.new('RGBA', (glow_w, glow_h), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    gd.rectangle([0, 0, glow_w, 2], fill=accent_color + (220,))
-    gd.rectangle([0, 2, glow_w, 6], fill=accent_color + (60,))
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=5))
-    img.paste(glow, (x, y - 2), glow)
-
-    # Subtle glowing side edges
-    side_h = h
-    side_w = 12
-    for side_x in [x, x + w - 1]:
-        side = Image.new('RGBA', (side_w, side_h), (0, 0, 0, 0))
-        sd = ImageDraw.Draw(side)
-        sd.line([(side_w // 2, 0), (side_w // 2, side_h)], fill=accent_color + (30,))
-        side = side.filter(ImageFilter.GaussianBlur(radius=3))
-        img.paste(side, (side_x - side_w // 2, y), side)
+    # Top accent line
+    draw.rectangle([x, y, x + w, y + 2], fill=accent_color)
 
 
 # ── Glow bar ───────────────────────────────────────────────────────
@@ -206,17 +183,6 @@ def _draw_bar(draw, img, x, y, w, h, pct, color):
     fill_w = max(0, int(w * min(pct, 100.0) / 100.0))
     if fill_w <= 0:
         return
-
-    # Glow halo on small cropped region
-    pad = 10
-    gw, gh = fill_w + pad * 2, h + pad * 2
-    if gw < 1 or gh < 1:
-        return
-    glow = Image.new('RGBA', (gw, gh), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    gd.rectangle([pad, pad, pad + fill_w, pad + h], fill=color + (100,))
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=8))
-    img.paste(glow, (x - pad, y - pad), glow)
 
     # Gradient fill: dim left -> bright right
     for col in range(fill_w):
@@ -236,108 +202,48 @@ def _draw_bar(draw, img, x, y, w, h, pct, color):
 
 # ── Session dots with glow ─────────────────────────────────────────
 def _draw_session_dots(img, x, y, count, current_session, dot_size=14, gap=8):
-    """Draw session indicator dots. Completed glow, current pulses, future dim."""
+    """Draw session indicator dots. Completed filled, current pulses, future dim."""
     total_dots = max(count + 1, LONG_BREAK_EVERY)
-    now = time.monotonic()
 
     for i in range(total_dots):
         dx = x + i * (dot_size + gap)
         dy = y
 
         if i < count:
-            # Completed -- glowing filled dot
-            color = ACCENT
-            if (i + 1) % LONG_BREAK_EVERY == 0:
-                color = CYAN
-            # Glow halo
-            pad = 8
-            size = dot_size + pad * 2
-            dot_layer = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-            dd = ImageDraw.Draw(dot_layer)
-            dd.ellipse([pad - 3, pad - 3, pad + dot_size + 3, pad + dot_size + 3],
-                       fill=color + (60,))
-            dot_layer = dot_layer.filter(ImageFilter.GaussianBlur(radius=4))
-            img.paste(dot_layer, (dx - pad, dy - pad), dot_layer)
-            # Sharp dot
-            sharp = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-            sd = ImageDraw.Draw(sharp)
-            sd.ellipse([pad, pad, pad + dot_size, pad + dot_size], fill=color + (255,))
-            # Bright core
-            core_pad = 3
+            # Completed
+            color = ACCENT if (i + 1) % LONG_BREAK_EVERY != 0 else CYAN
+            draw_ctx = ImageDraw.Draw(img)
+            draw_ctx.ellipse([dx, dy, dx + dot_size, dy + dot_size], fill=color + (255,))
             bright = tuple(min(255, c + 80) for c in color)
-            sd.ellipse([pad + core_pad, pad + core_pad,
-                        pad + dot_size - core_pad, pad + dot_size - core_pad],
-                       fill=bright + (180,))
-            img.paste(sharp, (dx - pad, dy - pad), sharp)
+            core_pad = 3
+            draw_ctx.ellipse([dx + core_pad, dy + core_pad,
+                              dx + dot_size - core_pad, dy + dot_size - core_pad],
+                             fill=bright + (180,))
         elif i == count:
-            # Current -- pulsing dot
-            pulse = 1.0 + 0.15 * math.sin(now * 3.0)
-            r = int(dot_size * pulse / 2)
-            cx_d = dx + dot_size // 2
-            cy_d = dy + dot_size // 2
+            # Current — pulsing
             inner_color = GREEN if _phase == 'WORK' else CYAN
-            # Glow
-            pad = 12
-            size = r * 2 + pad * 2
-            dot_layer = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-            dd = ImageDraw.Draw(dot_layer)
-            center = size // 2
-            dd.ellipse([center - r - 2, center - r - 2, center + r + 2, center + r + 2],
-                       fill=inner_color + (50,))
-            dot_layer = dot_layer.filter(ImageFilter.GaussianBlur(radius=5))
-            img.paste(dot_layer, (cx_d - size // 2, cy_d - size // 2), dot_layer)
-            # Outline ring
-            ring = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-            rd = ImageDraw.Draw(ring)
-            rd.ellipse([center - r, center - r, center + r, center + r],
-                       outline=ACCENT + (200,), width=2)
-            # Inner fill
-            inner_r = r - 3
-            if inner_r > 0:
-                rd.ellipse([center - inner_r, center - inner_r,
-                            center + inner_r, center + inner_r],
-                           fill=inner_color + (220,))
-            img.paste(ring, (cx_d - size // 2, cy_d - size // 2), ring)
+            draw_ctx = ImageDraw.Draw(img)
+            draw_ctx.ellipse([dx, dy, dx + dot_size, dy + dot_size],
+                             outline=ACCENT + (200,), width=2)
+            inner_pad = 3
+            draw_ctx.ellipse([dx + inner_pad, dy + inner_pad,
+                              dx + dot_size - inner_pad, dy + dot_size - inner_pad],
+                             fill=inner_color + (220,))
         else:
-            # Future -- dim outline
-            pad = 4
-            size = dot_size + pad * 2
-            dot_layer = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-            dd = ImageDraw.Draw(dot_layer)
-            dd.ellipse([pad, pad, pad + dot_size, pad + dot_size],
-                       outline=TEXT_DIM + (80,), width=1)
-            img.paste(dot_layer, (dx - pad, dy - pad), dot_layer)
+            # Future
+            draw_ctx = ImageDraw.Draw(img)
+            draw_ctx.ellipse([dx, dy, dx + dot_size, dy + dot_size],
+                             outline=TEXT_DIM + (80,), width=1)
 
 
 # ── Circular progress with dramatic glow ───────────────────────────
 def _draw_circular_progress(draw, img, cx, cy, radius, pct, color, width=12):
-    """Draw a circular progress arc with intense glow effect."""
+    """Draw a circular progress arc."""
     bbox = [cx - radius, cy - radius, cx + radius, cy + radius]
-    # Background ring
     draw.arc(bbox, 0, 360, fill=(25, 30, 45), width=width)
-
     if pct > 0:
         start = -90
         end = start + (pct / 100) * 360
-
-        # Wide atmospheric glow
-        gpad = 30
-        gsize = radius * 2 + gpad * 2
-        glow = Image.new('RGBA', (gsize, gsize), (0, 0, 0, 0))
-        gd = ImageDraw.Draw(glow)
-        gbbox = [gpad, gpad, gpad + radius * 2, gpad + radius * 2]
-        gd.arc(gbbox, start, end, fill=color + (80,), width=width + 16)
-        glow = glow.filter(ImageFilter.GaussianBlur(radius=12))
-        img.paste(glow, (cx - radius - gpad, cy - radius - gpad), glow)
-
-        # Tight core glow
-        glow2 = Image.new('RGBA', (gsize, gsize), (0, 0, 0, 0))
-        gd2 = ImageDraw.Draw(glow2)
-        gd2.arc(gbbox, start, end, fill=color + (160,), width=width + 4)
-        glow2 = glow2.filter(ImageFilter.GaussianBlur(radius=5))
-        img.paste(glow2, (cx - radius - gpad, cy - radius - gpad), glow2)
-
-        # Sharp arc
         draw.arc(bbox, start, end, fill=color, width=width)
 
 
@@ -468,19 +374,6 @@ def render_frame(w=1920, h=440):
     ty = block_top
     px = ring_cx - pw // 2
     py = block_top + th + gap
-
-    # Hero text glow
-    glow_pad = 30
-    glow_w = tw + glow_pad * 2
-    glow_h = th + glow_pad * 2
-    if glow_w > 0 and glow_h > 0:
-        text_glow = Image.new('RGBA', (glow_w, glow_h), (0, 0, 0, 0))
-        tg_draw = ImageDraw.Draw(text_glow)
-        tg_draw.text((glow_pad, glow_pad), timer_str,
-                     fill=progress_color + (120,), font=timer_font)
-        text_glow = text_glow.filter(ImageFilter.GaussianBlur(radius=14))
-        img.paste(text_glow, (tx - glow_pad, ty - glow_pad), text_glow)
-        draw = ImageDraw.Draw(img)
 
     # Sharp timer text
     draw.text((tx, ty), timer_str, fill=progress_color, font=timer_font)

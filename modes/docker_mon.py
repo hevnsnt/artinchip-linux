@@ -2,7 +2,7 @@
 
 import subprocess
 import time
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont
 
 # --- Color palette (vivid, saturated — matching sysmon dashboard) ---
 BG          = (5, 7, 12)
@@ -212,17 +212,6 @@ def _draw_bar(draw, img, x, y, w, h, pct, color):
     if fill_w <= 0:
         return
 
-    # Glow halo on small cropped region
-    pad = 10
-    gw, gh = fill_w + pad * 2, h + pad * 2
-    if gw < 1 or gh < 1:
-        return
-    glow = Image.new('RGBA', (gw, gh), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    gd.rectangle([pad, pad, pad + fill_w, pad + h], fill=color + (100,))
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=8))
-    img.paste(glow, (x - pad, y - pad), glow)
-
     # Gradient fill: dim left -> bright right
     for col in range(fill_w):
         t = col / max(fill_w - 1, 1)
@@ -239,30 +228,13 @@ def _draw_bar(draw, img, x, y, w, h, pct, color):
     draw.line([(x + 1, y + 1), (x + fill_w - 1, y + 1)], fill=hl)
 
 
-# --- Glow dot ---
+# --- Status dot ---
 def _draw_glow_dot(img, cx, cy, r, color):
-    """Draw a status dot with glow halo on a small cropped RGBA layer."""
-    pad = 12
-    size = (r + pad) * 2
-    dot = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    dd = ImageDraw.Draw(dot)
-    center = size // 2
-    # Glow
-    dd.ellipse([center - r - 4, center - r - 4, center + r + 4, center + r + 4],
-               fill=color + (60,))
-    dot_blur = dot.filter(ImageFilter.GaussianBlur(radius=6))
-    # Paste glow
-    img.paste(dot_blur, (cx - size // 2, cy - size // 2), dot_blur)
-    # Sharp dot on top
-    sharp = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(sharp)
-    sd.ellipse([center - r, center - r, center + r, center + r], fill=color + (255,))
-    # Bright core
-    core_r = max(1, r - 2)
+    draw = ImageDraw.Draw(img)
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color)
     bright = tuple(min(255, c + 80) for c in color)
-    sd.ellipse([center - core_r, center - core_r, center + core_r, center + core_r],
-               fill=bright + (180,))
-    img.paste(sharp, (cx - size // 2, cy - size // 2), sharp)
+    core_r = max(1, r - 2)
+    draw.ellipse([cx - core_r, cy - core_r, cx + core_r, cy + core_r], fill=bright)
 
 
 def render_frame(w=1920, h=440):
@@ -283,22 +255,11 @@ def render_frame(w=1920, h=440):
 
     # --- Header with gradient fill and glowing accent line ---
     header_h = 44
-    top_c = (14, 18, 32)
-    bot_c = (8, 11, 22)
-    for row in range(header_h):
-        t = row / max(header_h - 1, 1)
-        c = _lerp_color(top_c, bot_c, t)
-        draw.line([(0, row), (w, row)], fill=c)
+    draw.rectangle([0, 0, w, header_h], fill=(11, 14, 27))
 
-    # Glowing accent line under header
-    glow_w = w
-    glow_h = 16
-    glow = Image.new('RGBA', (glow_w, glow_h), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    gd.rectangle([0, 0, glow_w, 2], fill=ACCENT + (200,))
-    gd.rectangle([0, 2, glow_w, 6], fill=ACCENT + (50,))
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=4))
-    img.paste(glow, (0, header_h - 2), glow)
+    # Accent line under header
+    draw.rectangle([0, header_h - 2, w, header_h], fill=ACCENT)
+    draw.rectangle([0, header_h, w, header_h + 2], fill=ACCENT + (50,))
 
     draw.text((pad_x, 11), "DOCKER CONTAINERS", fill=ACCENT, font=title_font)
 
@@ -340,10 +301,7 @@ def render_frame(w=1920, h=440):
     # --- Column labels row ---
     col_label_y = header_h + 4
     col_label_h = 22
-    for row in range(col_label_h):
-        t = row / max(col_label_h - 1, 1)
-        c = _lerp_color((12, 16, 28), (8, 11, 20), t)
-        draw.line([(0, col_label_y + row), (w, col_label_y + row)], fill=c)
+    draw.rectangle([0, col_label_y, w, col_label_y + col_label_h], fill=(10, 13, 24))
 
     # Column positions — fit within 1920px without overlapping
     col_status_x = pad_x
@@ -384,17 +342,11 @@ def render_frame(w=1920, h=440):
         ry = content_top + i * row_h
         row_mid_y = ry + row_h // 2
 
-        # Alternating row with subtle gradient
+        # Alternating row background
         if i % 2 == 0:
-            for row in range(row_h):
-                t = row / max(row_h - 1, 1)
-                rc = _lerp_color((12, 16, 28, 40), (10, 13, 22, 30), t)
-                draw.line([(0, ry + row), (w, ry + row)], fill=rc[:3])
+            draw.rectangle([0, ry, w, ry + row_h], fill=(11, 14, 25))
         else:
-            for row in range(row_h):
-                t = row / max(row_h - 1, 1)
-                rc = _lerp_color((8, 10, 18, 20), (6, 8, 14, 15), t)
-                draw.line([(0, ry + row), (w, ry + row)], fill=rc[:3])
+            draw.rectangle([0, ry, w, ry + row_h], fill=(7, 9, 16))
 
         # Status dot with glow
         dot_color = GREEN if c['running'] else RED

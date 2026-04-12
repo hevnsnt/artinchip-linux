@@ -9,7 +9,7 @@ import socket
 import subprocess
 import time
 from datetime import datetime
-from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageEnhance, ImageFont
 
 # --- Visual style (dark theme) ---
 BG = (10, 12, 18)
@@ -207,19 +207,6 @@ def render_frame(w=1920, h=440):
     # --- Dim rain to background level ---
     img = ImageEnhance.Brightness(img).enhance(0.55)
 
-    # --- Subtle phosphor bloom ---
-    bloom = img.filter(ImageFilter.GaussianBlur(radius=4))
-    bloom = ImageEnhance.Brightness(bloom).enhance(0.35)
-    img = ImageChops.add(img, bloom)
-
-    # --- Bottom reflection (subtle) ---
-    reflect_h = 40
-    if h > reflect_h * 2:
-        strip = img.crop((0, h - reflect_h * 2, w, h - reflect_h))
-        strip = strip.transpose(Image.FLIP_TOP_BOTTOM)
-        strip = ImageEnhance.Brightness(strip).enhance(0.1)
-        img.paste(strip, (0, h - reflect_h))
-
     img_rgba = img.convert('RGBA')
     draw = ImageDraw.Draw(img_rgba)
 
@@ -236,10 +223,6 @@ def render_frame(w=1920, h=440):
     # Hostname / time / IP — with drop shadow for readability over rain
     bold_font = font(26)
     def _shadow_text(draw, x, y, text, color, f):
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                if dx or dy:
-                    draw.text((x + dx, y + dy), text, fill=(0, 0, 0, 255), font=f)
         draw.text((x + 1, y + 1), text, fill=(0, 0, 0, 255), font=f)
         draw.text((x, y), text, fill=color, font=f)
 
@@ -268,13 +251,14 @@ def render_frame(w=1920, h=440):
         # No background bar — text sits directly on the rain
 
         # Cyberpunk color coding
-        if any(kw in disp.lower() for kw in ['error', 'fail', 'crit', 'fatal']):
+        lower = disp.lower()
+        if any(kw in lower for kw in ['error', 'fail', 'crit', 'fatal']):
             text_color = (255, 40, 80, 255)   # hot pink / neon red
-        elif any(kw in disp.lower() for kw in ['warn', 'timeout', 'denied']):
+        elif any(kw in lower for kw in ['warn', 'timeout', 'denied']):
             text_color = (255, 180, 0, 255)   # amber
-        elif any(kw in disp.lower() for kw in ['start', 'up', 'connect', 'success', 'ok']):
+        elif any(kw in lower for kw in ['start', 'up', 'connect', 'success', 'ok']):
             text_color = (0, 255, 180, 255)   # neon teal
-        elif any(kw in disp.lower() for kw in ['session', 'auth', 'login', 'ssh']):
+        elif any(kw in lower for kw in ['session', 'auth', 'login', 'ssh']):
             text_color = (200, 80, 255, 255)  # neon purple
         else:
             text_color = (0, 230, 255, 255)   # cyan

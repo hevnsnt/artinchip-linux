@@ -11,7 +11,7 @@ import os
 import random
 import time
 import threading
-from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageChops
+from PIL import Image, ImageDraw, ImageFont
 
 # ── Colors ─────────────────────────────────────────────────────────
 BG          = (5, 7, 12)
@@ -82,15 +82,6 @@ def _get_scanlines(w, h):
 
 def _hero(draw, img, x, y, text, color, size):
     f = font(size)
-    bbox = f.getbbox(text)
-    tw = bbox[2] - bbox[0] + 20
-    th = bbox[3] - bbox[1] + 20
-    pad = 14
-    glow = Image.new('RGBA', (tw + pad*2, th + pad*2), (0,0,0,0))
-    gd = ImageDraw.Draw(glow)
-    gd.text((pad - bbox[0], pad - bbox[1]), text, fill=color+(120,), font=f)
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=10))
-    img.paste(glow, (x - pad, y - pad), glow)
     draw.text((x, y), text, fill=color, font=f)
 
 def _draw_arc(draw, img, cx, cy, radius, thickness, pct, color, bg_color=(20, 25, 38)):
@@ -98,24 +89,7 @@ def _draw_arc(draw, img, cx, cy, radius, thickness, pct, color, bg_color=(20, 25
     draw.arc(bbox, 135, 405, fill=bg_color, width=thickness)
     if pct > 0:
         end = 135 + int(270 * min(pct, 100) / 100)
-        gpad = 28
-        gsize = radius * 2 + gpad * 2
-        # Wide glow
-        glow = Image.new('RGBA', (gsize, gsize), (0,0,0,0))
-        gd = ImageDraw.Draw(glow)
-        gb = [gpad, gpad, gpad + radius*2, gpad + radius*2]
-        gd.arc(gb, 135, end, fill=color+(70,), width=thickness+14)
-        glow = glow.filter(ImageFilter.GaussianBlur(radius=10))
-        img.paste(glow, (cx-radius-gpad, cy-radius-gpad), glow)
-        # Core glow
-        glow2 = Image.new('RGBA', (gsize, gsize), (0,0,0,0))
-        gd2 = ImageDraw.Draw(glow2)
-        gd2.arc(gb, 135, end, fill=color+(180,), width=thickness+3)
-        glow2 = glow2.filter(ImageFilter.GaussianBlur(radius=4))
-        img.paste(glow2, (cx-radius-gpad, cy-radius-gpad), glow2)
-        # Sharp arc
         draw.arc(bbox, 135, end, fill=color, width=thickness)
-        # Glowing tip
         angle_rad = math.radians(end)
         tip_x = cx + int(radius * math.cos(angle_rad))
         tip_y = cy + int(radius * math.sin(angle_rad))
@@ -275,15 +249,6 @@ def render_frame(w=1920, h=440):
         # Update and draw particles
         _particles.update(direction, speed_mult)
         _particles.draw(draw, color)
-
-        # Bloom on the particles
-        bloom = img.convert('RGB').filter(ImageFilter.GaussianBlur(radius=4))
-        from PIL import ImageEnhance
-        bloom = ImageEnhance.Brightness(bloom).enhance(0.4)
-        img_rgb = img.convert('RGB')
-        img_rgb = ImageChops.add(img_rgb, bloom)
-        img = img_rgb.convert('RGBA')
-        draw = ImageDraw.Draw(img)
 
         # Phase label — large, centered top
         f = font(36)
@@ -453,15 +418,6 @@ def render_frame(w=1920, h=440):
             pts.append((px2, py2))
         fill_pts = pts + [(sp_x + sp_w, sp_y + sp_h), (sp_x, sp_y + sp_h)]
         draw.polygon(fill_pts, fill=(0, 30, 50))
-        # Glow
-        gpad = 6
-        glow = Image.new('RGBA', (sp_w + gpad*2, sp_h + gpad*2), (0,0,0,0))
-        gd = ImageDraw.Draw(glow)
-        shifted = [(p[0] - sp_x + gpad, p[1] - sp_y + gpad) for p in pts]
-        gd.line(shifted, fill=DL_COLOR+(140,), width=4)
-        glow = glow.filter(ImageFilter.GaussianBlur(radius=5))
-        img.paste(glow, (sp_x - gpad, sp_y - gpad), glow)
-        draw = ImageDraw.Draw(img)
         draw.line(pts, fill=DL_COLOR, width=2)
     else:
         draw.rectangle([sp_x, sp_y, sp_x + sp_w, sp_y + sp_h], fill=(6, 8, 14))
@@ -481,13 +437,6 @@ def render_frame(w=1920, h=440):
             pts.append((px2, py2))
         fill_pts = pts + [(sp_x + sp_w, sp_y2 + sp_h), (sp_x, sp_y2 + sp_h)]
         draw.polygon(fill_pts, fill=(25, 10, 45))
-        glow = Image.new('RGBA', (sp_w + 12, sp_h + 12), (0,0,0,0))
-        gd = ImageDraw.Draw(glow)
-        shifted = [(p[0] - sp_x + 6, p[1] - sp_y2 + 6) for p in pts]
-        gd.line(shifted, fill=UL_COLOR+(140,), width=4)
-        glow = glow.filter(ImageFilter.GaussianBlur(radius=5))
-        img.paste(glow, (sp_x - 6, sp_y2 - 6), glow)
-        draw = ImageDraw.Draw(img)
         draw.line(pts, fill=UL_COLOR, width=2)
     else:
         draw.rectangle([sp_x, sp_y2, sp_x + sp_w, sp_y2 + sp_h], fill=(6, 8, 14))

@@ -8,7 +8,7 @@ import re
 import subprocess
 import threading
 import time
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont
 
 # ── Colors (vivid, matches other modes) ────────────────────────────
 BG          = (5, 7, 12)
@@ -93,22 +93,11 @@ def _get_scanlines(w, h):
     return _scanline_cache[key]
 
 def _draw_glow_dot(img, cx, cy, r, color):
-    pad = 10
-    size = (r + pad) * 2
-    dot = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    dd = ImageDraw.Draw(dot)
-    dd.ellipse([pad - 3, pad - 3, pad + r * 2 + 3, pad + r * 2 + 3],
-               fill=color + (60,))
-    dot = dot.filter(ImageFilter.GaussianBlur(radius=5))
-    img.paste(dot, (cx - r - pad, cy - r - pad), dot)
-    sharp = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(sharp)
-    sd.ellipse([pad, pad, pad + r * 2, pad + r * 2], fill=color + (255,))
+    draw = ImageDraw.Draw(img)
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color)
     bright = tuple(min(255, c + 80) for c in color)
     core = max(1, r - 2)
-    sd.ellipse([pad + r - core, pad + r - core, pad + r + core, pad + r + core],
-               fill=bright + (200,))
-    img.paste(sharp, (cx - r - pad, cy - r - pad), sharp)
+    draw.ellipse([cx - core, cy - core, cx + core, cy + core], fill=bright)
 
 # ── Device type guessing ───────────────────────────────────────────
 # MAC vendor keywords → (type, color)
@@ -675,20 +664,11 @@ def render_frame(w=1920, h=440):
 
     # ── Header ──
     header_h = 44
-    for row in range(header_h):
-        t = row / max(header_h - 1, 1)
-        c = _lerp_color((14, 18, 32), (8, 11, 22), t)
-        draw.line([(0, row), (w, row)], fill=c)
+    draw.rectangle([0, 0, w, header_h], fill=(11, 14, 27))
 
     # Accent line
-    glow = Image.new('RGBA', (w, 16), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    gd.rectangle([0, 0, w, 2], fill=ACCENT + (200,))
-    gd.rectangle([0, 2, w, 6], fill=ACCENT + (50,))
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=4))
-    img.paste(glow, (0, header_h - 2), glow)
-
-    draw = ImageDraw.Draw(img)
+    draw.rectangle([0, header_h - 2, w, header_h], fill=ACCENT)
+    draw.rectangle([0, header_h, w, header_h + 2], fill=ACCENT + (50,))
     draw.text((pad_x, 10), "NETWORK DEVICES", fill=ACCENT, font=font(24))
 
     # Status — show scanning indicator prominently
@@ -727,10 +707,7 @@ def render_frame(w=1920, h=440):
     # ── Column header ──
     col_y = header_h + 4
     col_h = 22
-    for row in range(col_h):
-        t = row / max(col_h - 1, 1)
-        c = _lerp_color((12, 16, 28), (8, 11, 20), t)
-        draw.line([(0, col_y + row), (w, col_y + row)], fill=c)
+    draw.rectangle([0, col_y, w, col_y + col_h], fill=(10, 13, 24))
 
     # Column headers (only shown for first column, positions are relative)
     draw.text((pad_x + 26, col_y + 2), "IP ADDRESS", fill=TEXT_DIM, font=font(14))
@@ -789,15 +766,9 @@ def render_frame(w=1920, h=440):
             # Row background
             if is_new:
                 # Bright green highlight for new devices
-                for row in range(row_h):
-                    draw.line([(x_off, ry + row), (x_off + col_w - 2, ry + row)],
-                              fill=(0, 40, 20))
+                draw.rectangle([x_off, ry, x_off + col_w - 2, ry + row_h], fill=(0, 40, 20))
             elif i % 2 == 0:
-                for row in range(row_h):
-                    t = row / max(row_h - 1, 1)
-                    rc = _lerp_color((12, 16, 28), (10, 13, 22), t)
-                    draw.line([(x_off, ry + row), (x_off + col_w - 2, ry + row)],
-                              fill=rc)
+                draw.rectangle([x_off, ry, x_off + col_w - 2, ry + row_h], fill=(11, 14, 25))
 
             mid_y = ry + row_h // 2
 

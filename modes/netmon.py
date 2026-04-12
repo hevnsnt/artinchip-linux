@@ -6,7 +6,7 @@ import socket
 import subprocess
 import time
 from collections import Counter
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont
 
 # --- Color palette (vivid, saturated — matching sysmon dashboard) ---
 BG          = (5, 7, 12)
@@ -338,14 +338,6 @@ def _draw_mini_bar_chart(img, draw, x, y, w, h, state_counts, total):
         seg_w = max(1, int(w * other_count / total))
         bd.rectangle([cx, 0, cx + seg_w, h], fill=PURPLE + (255,))
 
-    # Glow: blur a copy and paste underneath
-    pad = 8
-    glow_layer = Image.new('RGBA', (w + pad * 2, h + pad * 2), (0, 0, 0, 0))
-    glow_layer.paste(bar_layer, (pad, pad), bar_layer)
-    glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(radius=6))
-    img.paste(glow_layer, (x - pad, y - pad), glow_layer)
-
-    # Sharp bar on top
     img.paste(bar_layer, (x, y), bar_layer)
 
 
@@ -371,21 +363,11 @@ def render_frame(w=1920, h=440):
     header_h = 44
     top_c = (14, 18, 32)
     bot_c = (8, 11, 22)
-    for row in range(header_h):
-        t = row / max(header_h - 1, 1)
-        c = _lerp_color(top_c, bot_c, t)
-        draw.line([(0, row), (w, row)], fill=c)
+    draw.rectangle([0, 0, w, header_h], fill=(11, 14, 27))
 
-    # Glowing accent line under header
-    glow_w = w
-    glow_h = 16
-    glow = Image.new('RGBA', (glow_w, glow_h), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    gd.rectangle([0, 0, glow_w, 2], fill=ACCENT + (200,))
-    gd.rectangle([0, 2, glow_w, 6], fill=ACCENT + (50,))
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=4))
-    img.paste(glow, (0, header_h - 2), glow)
-    draw = ImageDraw.Draw(img)
+    # Accent line under header
+    draw.rectangle([0, header_h - 2, w, header_h], fill=ACCENT)
+    draw.rectangle([0, header_h, w, header_h + 2], fill=ACCENT + (50,))
 
     draw.text((pad_x, 11), "NETWORK CONNECTIONS", fill=ACCENT, font=title_font)
 
@@ -395,10 +377,7 @@ def render_frame(w=1920, h=440):
 
     summary_y = header_h + 4
     summary_h = 24
-    for row in range(summary_h):
-        t = row / max(summary_h - 1, 1)
-        c = _lerp_color((12, 16, 28), (8, 11, 20), t)
-        draw.line([(0, summary_y + row), (w, summary_y + row)], fill=c)
+    draw.rectangle([0, summary_y, w, summary_y + summary_h], fill=(10, 13, 24))
 
     # Draw total count first
     total_text = f"{total} connections"
@@ -439,10 +418,7 @@ def render_frame(w=1920, h=440):
     # --- Column header ---
     col_header_y = legend_y + legend_h + 8
     col_header_h = 24
-    for row in range(col_header_h):
-        t = row / max(col_header_h - 1, 1)
-        c = _lerp_color((12, 16, 28), (8, 11, 20), t)
-        draw.line([(0, col_header_y + row), (w, col_header_y + row)], fill=c)
+    draw.rectangle([0, col_header_y, w, col_header_y + col_header_h], fill=(10, 13, 24))
 
     # Separator line under column labels
     sep_y = col_header_y + col_header_h
@@ -485,17 +461,11 @@ def render_frame(w=1920, h=440):
     for i, conn in enumerate(display_conns):
         ry = content_top + i * row_h
 
-        # Alternating gradient rows
+        # Alternating flat rows
         if i % 2 == 0:
-            for row in range(row_h):
-                t = row / max(row_h - 1, 1)
-                rc = _lerp_color((12, 16, 28, 40), (10, 13, 22, 30), t)
-                draw.line([(0, ry + row), (w, ry + row)], fill=rc[:3])
+            draw.rectangle([0, ry, w, ry + row_h], fill=(11, 14, 25))
         else:
-            for row in range(row_h):
-                t = row / max(row_h - 1, 1)
-                rc = _lerp_color((8, 10, 18, 20), (6, 8, 14, 15), t)
-                draw.line([(0, ry + row), (w, ry + row)], fill=rc[:3])
+            draw.rectangle([0, ry, w, ry + row_h], fill=(7, 9, 16))
 
         state = conn['state']
         state_color = STATE_COLORS.get(state, TEXT_DIM)

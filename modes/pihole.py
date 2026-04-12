@@ -10,7 +10,7 @@ import math
 import os
 import time
 import threading
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont
 
 # ── Colors ─────────────────────────────────────────────────────────
 BG          = (5, 7, 12)
@@ -90,15 +90,6 @@ def _get_scanlines(w, h):
 
 def _hero(draw, img, x, y, text, color, size):
     f = font(size)
-    bbox = f.getbbox(text)
-    tw = bbox[2] - bbox[0] + 20
-    th = bbox[3] - bbox[1] + 20
-    pad = 12
-    glow = Image.new('RGBA', (tw + pad*2, th + pad*2), (0,0,0,0))
-    gd = ImageDraw.Draw(glow)
-    gd.text((pad - bbox[0], pad - bbox[1]), text, fill=color+(110,), font=f)
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=8))
-    img.paste(glow, (x - pad, y - pad), glow)
     draw.text((x, y), text, fill=color, font=f)
 
 # ── API backends ───────────────────────────────────────────────────
@@ -227,13 +218,6 @@ def render_frame(w=1920, h=440):
     # Protection status indicator — glowing dot
     dot_color = SHIELD_GREEN if protected else RED
     dot_x, dot_y = 30, 22
-    # Glow
-    glow = Image.new('RGBA', (40, 40), (0,0,0,0))
-    gd = ImageDraw.Draw(glow)
-    gd.ellipse([5, 5, 35, 35], fill=dot_color + (60,))
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=6))
-    img.paste(glow, (dot_x - 8, dot_y - 8), glow)
-    draw = ImageDraw.Draw(img)
     draw.ellipse([dot_x, dot_y, dot_x + 20, dot_y + 20], fill=dot_color)
     bright = tuple(min(255, c + 80) for c in dot_color)
     draw.ellipse([dot_x + 5, dot_y + 5, dot_x + 15, dot_y + 15], fill=bright)
@@ -278,13 +262,8 @@ def render_frame(w=1920, h=440):
 
     # Thin accent line under hero metrics
     line_y = 95
-    glow_line = Image.new('RGBA', (w, 12), (0,0,0,0))
-    gld = ImageDraw.Draw(glow_line)
-    gld.rectangle([0, 4, w, 6], fill=ACCENT + (150,))
-    gld.rectangle([0, 6, w, 8], fill=ACCENT + (40,))
-    glow_line = glow_line.filter(ImageFilter.GaussianBlur(radius=3))
-    img.paste(glow_line, (0, line_y), glow_line)
-    draw = ImageDraw.Draw(img)
+    draw.rectangle([0, line_y + 4, w, line_y + 6], fill=ACCENT)
+    draw.rectangle([0, line_y + 6, w, line_y + 8], fill=ACCENT + (40,))
 
     # ═══════════════════════════════════════════════════════════════
     # MIDDLE: Full-width timeline (the visual centerpiece)
@@ -309,31 +288,10 @@ def render_frame(w=1920, h=440):
             py = spark_y + spark_h - int(min(val, mx_val) * spark_h / mx_val)
             points.append((px, py))
 
-        # Gradient fill — column by column for smooth color
-        for i in range(len(points) - 1):
-            x1, y1 = points[i]
-            x2, y2 = points[i + 1]
-            for px in range(x1, x2 + 1):
-                t = (px - spark_x) / max(spark_w, 1)
-                col = _lerp_color((0, 40, 80), (0, 120, 200), t)
-                # Interpolate y
-                if x2 != x1:
-                    frac = (px - x1) / (x2 - x1)
-                else:
-                    frac = 0
-                py = int(y1 + (y2 - y1) * frac)
-                draw.line([(px, py), (px, spark_y + spark_h)], fill=col)
-
-        # Glow on the query line
-        pad = 10
-        gw, gh = spark_w + pad*2, spark_h + pad*2
-        glow = Image.new('RGBA', (gw, gh), (0,0,0,0))
-        gd = ImageDraw.Draw(glow)
-        shifted = [(px - spark_x + pad, py - spark_y + pad) for px, py in points]
-        gd.line(shifted, fill=ACCENT + (160,), width=5)
-        glow = glow.filter(ImageFilter.GaussianBlur(radius=6))
-        img.paste(glow, (spark_x - pad, spark_y - pad), glow)
-        draw = ImageDraw.Draw(img)
+        # Fill under the query line
+        fill_pts = points + [(spark_x + spark_w, spark_y + spark_h),
+                             (spark_x, spark_y + spark_h)]
+        draw.polygon(fill_pts, fill=(0, 80, 140))
 
         # Sharp query line
         draw.line(points, fill=ACCENT, width=2)

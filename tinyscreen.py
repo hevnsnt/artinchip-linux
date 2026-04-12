@@ -1054,7 +1054,7 @@ def _mode_fps(name):
     """
     return {
         'visualizer': 1/60,  # 60fps — audio needs smooth updates
-        'matrix':     1/30,  # 30fps — good balance for rain effect
+        'matrix':     1/15,  # 15fps — rain effect looks fine at this rate
         'news':       1/30,  # 30fps — smooth text scrolling
         'ticker':     1/30,  # 30fps — smooth scroll
         'nowplaying': 1/10,  # 10fps — progress bar updates

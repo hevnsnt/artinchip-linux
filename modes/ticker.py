@@ -7,7 +7,7 @@ Designed for 1920x440 stretched bar LCDs.
 """
 
 import time
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont
 
 # ── Colors (vivid, saturated — matching sysmon dashboard) ──────────
 BG          = (5, 7, 12)
@@ -202,16 +202,6 @@ def _draw_sparkline(draw, img, x, y, w, h, data, color):
         top_fill.append((px, min(py + band_h, y + h)))
     draw.polygon(top_fill, fill=brighter)
 
-    # Glow layer on the line (cropped region, not full-screen)
-    pad = 8
-    gw, gh = w + pad * 2, h + pad * 2
-    glow = Image.new('RGBA', (gw, gh), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    shifted = [(px - x + pad, py - y + pad) for px, py in points]
-    gd.line(shifted, fill=color + (140,), width=5)
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=6))
-    img.paste(glow, (x - pad, y - pad), glow)
-
     # Sharp bright line on top
     draw.line(points, fill=tuple(min(255, c + 40) for c in color), width=2)
 
@@ -229,17 +219,7 @@ def _format_price(price):
         return f"${price:.6f}"
 
 def _draw_hero_text(draw, img, x, y, text, color, size):
-    """Draw large text with a subtle glow behind it."""
     f = font(size)
-    bbox = f.getbbox(text)
-    tw = bbox[2] - bbox[0] + 20
-    th = bbox[3] - bbox[1] + 20
-    pad = 8
-    glow = Image.new('RGBA', (tw + pad * 2, th + pad * 2), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    gd.text((pad - bbox[0], pad - bbox[1]), text, fill=color + (90,), font=f)
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=5))
-    img.paste(glow, (x - pad, y - pad), glow)
     draw.text((x, y), text, fill=color, font=f)
 
 def _draw_coin_card(draw, img, x, y, w, h, coin_id, symbol):
@@ -258,32 +238,11 @@ def _draw_coin_card(draw, img, x, y, w, h, coin_id, symbol):
     else:
         perf_color = ACCENT
 
-    # ── Card background: vertical gradient ──
-    top_c = (14, 18, 30)
-    bot_c = (8, 11, 20)
-    for row in range(h):
-        t = row / max(h - 1, 1)
-        c = _lerp_color(top_c, bot_c, t)
-        draw.line([(x, y + row), (x + w, y + row)], fill=c)
+    # ── Card background ──
+    draw.rectangle([x, y, x + w, y + h], fill=(11, 14, 25))
 
-    # ── Glowing top accent line (colored by performance) ──
-    glow_w = w
-    glow_h = 18
-    glow = Image.new('RGBA', (glow_w, glow_h), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    gd.rectangle([0, 0, glow_w, 2], fill=perf_color + (220,))
-    gd.rectangle([0, 2, glow_w, 6], fill=perf_color + (50,))
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=4))
-    img.paste(glow, (x, y - 2), glow)
-
-    # ── Glowing left edge ──
-    side_h = h
-    side_w = 10
-    side = Image.new('RGBA', (side_w, side_h), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(side)
-    sd.line([(side_w // 2, 0), (side_w // 2, side_h)], fill=perf_color + (30,))
-    side = side.filter(ImageFilter.GaussianBlur(radius=3))
-    img.paste(side, (x - side_w // 2, y), side)
+    # ── Top accent line (colored by performance) ──
+    draw.rectangle([x, y, x + w, y + 2], fill=perf_color)
 
     # ── Symbol (bold, top-left) ──
     draw.text((x + pad, y + 10), symbol, fill=ACCENT, font=font(38))
