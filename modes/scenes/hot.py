@@ -58,6 +58,37 @@ class HotScene(BaseScene):
         # Cracked ground seed
         self._crack_seed = 42
 
+        # Pre-render cracked ground layer (identical every frame)
+        self._ground_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+        ground_draw = ImageDraw.Draw(self._ground_layer)
+        ground_top = h - 20
+        ground_draw.rectangle([0, ground_top, w, h], fill=(40, 15, 5, 255))
+        crack_rng = random.Random(self._crack_seed)
+        crack_color = (80, 40, 15, 255)
+        for _ in range(35):
+            cx_start = crack_rng.randint(0, w)
+            cy_start = crack_rng.randint(ground_top + 2, h - 2)
+            segs = crack_rng.randint(3, 8)
+            pts = [(cx_start, cy_start)]
+            for _ in range(segs):
+                dx = crack_rng.randint(-25, 25)
+                dy = crack_rng.randint(-4, 4)
+                nx_pt = max(0, min(w, pts[-1][0] + dx))
+                ny_pt = max(ground_top, min(h, pts[-1][1] + dy))
+                pts.append((nx_pt, ny_pt))
+            if len(pts) >= 2:
+                ground_draw.line(pts, fill=crack_color, width=1)
+
+        # Pre-render ember glow sprites
+        self._ember_sprites = [
+            engine.glow_sprite(2, (255, 120, 20), alpha_peak=140),
+            engine.glow_sprite(3, (255, 160, 40), alpha_peak=120),
+            engine.glow_sprite(4, (255, 100, 10), alpha_peak=100),
+        ]
+
+        # Pre-render ground-level heat glow
+        self._heat_glow = engine.glow_sprite(int(w // 3), (255, 80, 10), alpha_peak=25)
+
         # Pre-compute vignette mask (heavier, 0.20 strength)
         x_coords = np.linspace(-1, 1, w, dtype=np.float32)
         y_coords = np.linspace(-1, 1, h, dtype=np.float32)
@@ -215,37 +246,13 @@ class HotScene(BaseScene):
                 haze_draw.line(pts, fill=(255, 150, 50, band_alpha), width=2)
         scene.alpha_composite(haze_layer)
 
-        # 6. Cracked ground -- bottom 20px
-        ground_top = h - 20
-        ground_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        ground_draw = ImageDraw.Draw(ground_layer)
+        # 6. Cracked ground -- pre-rendered at init
+        scene.alpha_composite(self._ground_layer)
 
-        # Dark parched ground fill
-        ground_draw.rectangle([0, ground_top, w, h], fill=(40, 15, 5, 255))
-
-        # Stable crack lines from seeded RNG
-        crack_rng = random.Random(self._crack_seed)
-        crack_color = (80, 40, 15, 255)
-        for _ in range(35):
-            cx_start = crack_rng.randint(0, w)
-            cy_start = crack_rng.randint(ground_top + 2, h - 2)
-            segs = crack_rng.randint(3, 8)
-            pts = [(cx_start, cy_start)]
-            for _ in range(segs):
-                dx = crack_rng.randint(-25, 25)
-                dy = crack_rng.randint(-4, 4)
-                nx_pt = max(0, min(w, pts[-1][0] + dx))
-                ny_pt = max(ground_top, min(h, pts[-1][1] + dy))
-                pts.append((nx_pt, ny_pt))
-            if len(pts) >= 2:
-                ground_draw.line(pts, fill=crack_color, width=1)
-        scene.alpha_composite(ground_layer)
-
-        # 7. Ember particles -- rising orange-red dots with horizontal wobble
+        # 7. Ember particles -- rising glow sprites with horizontal wobble
         ember_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        ember_draw = ImageDraw.Draw(ember_layer)
 
-        for ember in self._embers:
+        for i, ember in enumerate(self._embers):
             # Update position
             wobble = math.sin(t * 1.5 + ember['phase']) * 0.4
             ember['x'] += ember['vx'] + wobble
@@ -257,18 +264,11 @@ class HotScene(BaseScene):
                 new = self._spawn_ember(w, h, initial=False)
                 ember.update(new)
 
-            # Flickering alpha
-            flicker = 0.5 + 0.5 * math.sin(t * 8 + ember['phase'])
-            a = int(ember['alpha'] * flicker * ember['life'])
-            a = max(0, min(255, a))
-            sz = ember['size']
             ex, ey = int(ember['x']), int(ember['y'])
 
-            if 0 <= ex < w and 0 <= ey < h and a > 5:
-                ember_draw.ellipse(
-                    [ex - sz, ey - sz, ex + sz, ey + sz],
-                    fill=(255, 90 + random.randint(0, 50), 10, a),
-                )
+            if 0 <= ex < w and 0 <= ey < h:
+                sprite = self._ember_sprites[i % len(self._ember_sprites)]
+                engine.stamp_glow(ember_layer, ex, ey, sprite)
         scene.alpha_composite(ember_layer)
 
         # 8. Bottom atmosphere -- warm dark gradient fade
@@ -282,7 +282,10 @@ class HotScene(BaseScene):
             bottom_arr[y, :, 3] = int(frac ** 1.5 * 50)
         scene.alpha_composite(Image.fromarray(bottom_arr, 'RGBA'))
 
-        # 9. Vignette -- heavier 0.20 strength (pre-computed)
+        # 9. Ground-level heat glow
+        engine.stamp_glow(scene, w // 2, h - 5, self._heat_glow)
+
+        # 10. Vignette -- heavier 0.20 strength (pre-computed)
         arr = np.array(scene, dtype=np.float32)
         arr[..., :3] *= self._vignette[..., np.newaxis]
         scene = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), 'RGBA')

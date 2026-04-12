@@ -69,15 +69,19 @@ class SunsetScene(BaseScene):
                 # Bright orange-pink rim (same shape, rendered lighter, used as overlay)
                 rim_color = (255, 130, 50)
                 rim_sprite = self._build_rim_sprite(cloud_w, cloud_h, rim_color, rim_a, seed)
+                x_start = rng.uniform(-cloud_w, w + cloud_w)
                 self._clouds.append({
                     'body': body_sprite,
                     'rim': rim_sprite,
-                    'x': rng.uniform(-cloud_w, w + cloud_w),
+                    'x_start': x_start,
+                    'x': x_start,
                     'y': rng.uniform(h * y_lo, h * y_hi),
                     'vx': rng.uniform(spd_lo, spd_hi) * rng.choice([-1, 1]),
                     'w': cloud_w,
+                    'cw': cloud_w,
                     'h': cloud_h,
                     'layer': y_lo,  # for sorting/parallax
+                    'phase': rng.uniform(0, math.tau),
                 })
 
         # Sort clouds by layer for back-to-front rendering (done once)
@@ -95,6 +99,35 @@ class SunsetScene(BaseScene):
         X, Y = np.meshgrid(x_lin, y_lin)
         self._vignette = np.clip(
             1.0 - 0.15 * (X ** 2 * 0.3 + Y ** 2 * 0.7), 0.5, 1.0)
+
+        # --- ember/dust particles rising from horizon ---
+        self._embers = []
+        for _ in range(10):
+            self._embers.append({
+                'x': rng.uniform(0, w),
+                'y': rng.uniform(h * 0.6, h),
+                'vy': rng.uniform(-0.5, -0.15),
+                'vx': rng.uniform(-0.2, 0.3),
+                'phase': rng.uniform(0, math.tau),
+                'sprite': engine.glow_sprite(3, (255, 140, 40), alpha_peak=100),
+            })
+
+        # --- dark silhouette ground strip (jagged treeline/roofline) ---
+        self._ground_sil = Image.new('RGBA', (w, 40), (0, 0, 0, 0))
+        sil_draw = ImageDraw.Draw(self._ground_sil)
+        # Draw a jagged treeline
+        points = [(0, 40)]
+        x_pos = 0
+        while x_pos < w:
+            tree_h = rng.randint(8, 30)
+            tree_w = rng.randint(15, 50)
+            points.append((x_pos, 40 - tree_h))
+            points.append((x_pos + tree_w // 2, 40 - tree_h - rng.randint(3, 12)))
+            points.append((x_pos + tree_w, 40 - tree_h))
+            x_pos += tree_w + rng.randint(5, 20)
+        points.append((w, 40))
+        points.append((w, 40))
+        sil_draw.polygon(points, fill=(8, 5, 15, 230))
 
     # ------------------------------------------------------------------
     # Pre-computed assets
@@ -407,16 +440,13 @@ class SunsetScene(BaseScene):
         # Collect all rim sprites onto one layer for a single additive pass
         rim_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
         for cloud in self._clouds:
-            cloud['x'] += cloud['vx'] * 0.016
-            cw = cloud['w']
-            # Wrap around
-            if cloud['vx'] > 0 and cloud['x'] > w + cw:
-                cloud['x'] = -cw
-            elif cloud['vx'] < 0 and cloud['x'] < -cw:
-                cloud['x'] = w + cw
+            cw = cloud['cw']
+            # Compute position from t directly (no hardcoded dt)
+            cx = (cloud['x_start'] + cloud['vx'] * t) % (w + cw + 200) - cw
 
-            cx_int = int(cloud['x'])
-            cy_int = int(cloud['y'])
+            # Vertical bob
+            cy_int = int(cloud['y'] + math.sin(t * 0.08 + cloud['phase']) * 4)
+            cx_int = int(cx)
 
             # Only draw if visible
             if cx_int + cw > 0 and cx_int < w:
@@ -427,6 +457,20 @@ class SunsetScene(BaseScene):
 
         # Single additive composite for all rim lighting
         scene = engine.additive_composite(scene, rim_layer)
+
+        # 7b. Ember/dust particles rising from horizon
+        for ember in self._embers:
+            ember['x'] += ember['vx'] + math.sin(t * 0.3 + ember['phase']) * 0.4
+            ember['y'] += ember['vy']
+            if ember['y'] < h * 0.3:
+                ember['y'] = h * 0.95
+                ember['x'] = random.uniform(0, w)
+            pulse = 0.5 + 0.5 * math.sin(t * 2 + ember['phase'] * 2)
+            if pulse > 0.3:
+                engine.stamp_glow(scene, int(ember['x']), int(ember['y']), ember['sprite'])
+
+        # 7c. Dark silhouette ground strip
+        scene.alpha_composite(self._ground_sil, dest=(0, h - 40))
 
         # 8. Color grading: warm orange-gold tint + contrast + vignette
         #    Combined into minimal array operations for performance

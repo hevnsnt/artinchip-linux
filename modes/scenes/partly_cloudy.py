@@ -35,6 +35,30 @@ class PartlyCloudyScene(BaseScene):
         self._sun_norm = self._sun_dist / max(self.sun_r, 1)
         self._sun_mask = self._sun_norm < 1.4  # padded for feathered edge
 
+        # --- pre-render sun disc sprite (static -- never changes frame to frame) ---
+        sun_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+        sun_arr = np.array(sun_layer)
+        norm = self._sun_norm
+        mask = self._sun_mask
+        r_v = np.where(norm < 0.25, 255,
+               np.where(norm < 0.55, 255,
+               np.where(norm < 0.85, 255, 245)))
+        g_v = np.where(norm < 0.25, 253,
+               np.where(norm < 0.55, 242,
+               np.where(norm < 0.85, 215, 175)))
+        b_v = np.where(norm < 0.25, 242,
+               np.where(norm < 0.55, 185,
+               np.where(norm < 0.85, 105, 45)))
+        alpha = np.zeros_like(norm)
+        outer = mask & (norm >= 0.55)
+        alpha[mask] = 255
+        alpha[outer] = np.clip((1.4 - norm[outer]) / 0.85 * 255, 0, 255)
+        sun_arr[mask, 0] = r_v[mask].astype(np.uint8)
+        sun_arr[mask, 1] = g_v[mask].astype(np.uint8)
+        sun_arr[mask, 2] = b_v[mask].astype(np.uint8)
+        sun_arr[mask, 3] = alpha[mask].astype(np.uint8)
+        self._sun_sprite = Image.fromarray(sun_arr, 'RGBA')
+
         # --- 7 cloud configs with varying depth/size/speed ---
         rng = random.Random(77)
         self.clouds = []
@@ -79,6 +103,33 @@ class PartlyCloudyScene(BaseScene):
         self._vignette = np.clip(
             1.0 - 0.10 * (X ** 2 * 0.3 + Y ** 2 * 0.7), 0.55, 1.0)
 
+        # --- ground mist / horizon haze (4 soft glows near bottom) ---
+        rng = random.Random(78)
+        self._ground_mist = []
+        for _ in range(4):
+            rx = int(rng.uniform(150, 250))
+            self._ground_mist.append({
+                'x': rng.uniform(-100, w + 100),
+                'y': h - rng.randint(15, 35),
+                'rx': rx,
+                'speed': rng.uniform(2, 6),
+                'phase': rng.uniform(0, math.tau),
+                'sprite': engine.glow_sprite(rx, (200, 210, 230), alpha_peak=20),
+            })
+
+        # --- pollen / dust particles (25 warm floating specks) ---
+        self._pollen = []
+        for _ in range(25):
+            self._pollen.append({
+                'x': rng.uniform(0, w),
+                'y': rng.uniform(h * 0.2, h * 0.85),
+                'vx': rng.uniform(-0.3, 0.5),
+                'vy': rng.uniform(-0.2, 0.2),
+                'phase': rng.uniform(0, math.tau),
+                'size': rng.uniform(1, 2),
+                'alpha': rng.randint(40, 100),
+            })
+
     # ------------------------------------------------------------------
 
     def render(self, t, weather_data):
@@ -88,34 +139,8 @@ class PartlyCloudyScene(BaseScene):
         # 1 --- Sky gradient ---
         scene = self._gradient.copy()
 
-        # 2 --- Sun radial gradient (numpy distance field) ---
-        sun_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        sun_arr = np.array(sun_layer)
-        norm = self._sun_norm
-        mask = self._sun_mask
-
-        # Color bands: white core -> warm yellow -> golden edge
-        r_v = np.where(norm < 0.25, 255,
-               np.where(norm < 0.55, 255,
-               np.where(norm < 0.85, 255, 245)))
-        g_v = np.where(norm < 0.25, 253,
-               np.where(norm < 0.55, 242,
-               np.where(norm < 0.85, 215, 175)))
-        b_v = np.where(norm < 0.25, 242,
-               np.where(norm < 0.55, 185,
-               np.where(norm < 0.85, 105, 45)))
-
-        # Smooth alpha: solid core, feathered outer fringe
-        alpha = np.zeros_like(norm)
-        outer = mask & (norm >= 0.55)
-        alpha[mask] = 255
-        alpha[outer] = np.clip((1.4 - norm[outer]) / 0.85 * 255, 0, 255)
-
-        sun_arr[mask, 0] = r_v[mask].astype(np.uint8)
-        sun_arr[mask, 1] = g_v[mask].astype(np.uint8)
-        sun_arr[mask, 2] = b_v[mask].astype(np.uint8)
-        sun_arr[mask, 3] = alpha[mask].astype(np.uint8)
-        sun_layer = Image.fromarray(sun_arr, 'RGBA')
+        # 2 --- Sun radial gradient (pre-rendered sprite) ---
+        sun_layer = self._sun_sprite
 
         # 3 --- Sun bloom (additive glow halo) ---
         sun_bloomed = engine.bloom(sun_layer, radius=40, intensity=1.5, downsample=4)
@@ -209,6 +234,20 @@ class PartlyCloudyScene(BaseScene):
 
         scene.alpha_composite(cloud_layer)
 
+        # 7b --- Pollen / dust particles (warm floating specks) ---
+        pollen_draw = ImageDraw.Draw(scene)
+        for p in self._pollen:
+            p['x'] += p['vx'] + math.sin(t * 0.5 + p['phase']) * 0.3
+            p['y'] += p['vy'] + math.sin(t * 0.3 + p['phase'] * 1.5) * 0.2
+            if p['x'] > w + 10: p['x'] = -10
+            if p['x'] < -10: p['x'] = w + 10
+            if p['y'] > h * 0.9: p['y'] = h * 0.2
+            if p['y'] < h * 0.15: p['y'] = h * 0.85
+            px, py = int(p['x']), int(p['y'])
+            sz = int(p['size'])
+            pollen_draw.ellipse([px - sz, py - sz, px + sz, py + sz],
+                                 fill=(255, 245, 200, p['alpha']))
+
         # 8 --- Silver linings (bright glow on sun-facing cloud edges) ---
         lining_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
         ld = ImageDraw.Draw(lining_layer)
@@ -248,6 +287,12 @@ class PartlyCloudyScene(BaseScene):
 
         # 10 --- Warm horizon glow ---
         scene.alpha_composite(self._horizon_glow)
+
+        # 10b --- Ground mist / horizon haze ---
+        for mist in self._ground_mist:
+            mx = (mist['x'] + mist['speed'] * t) % (w + mist['rx'] * 2) - mist['rx']
+            my = mist['y'] + math.sin(t * 0.15 + mist['phase']) * 3
+            engine.stamp_glow(scene, int(mx), int(my), mist['sprite'])
 
         # 11 --- Vignette (0.10 strength, pre-computed) ---
         arr = np.array(scene, dtype=np.float32)

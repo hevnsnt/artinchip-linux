@@ -103,13 +103,42 @@ class NightScene(BaseScene):
             cloud_color = (30, 35, 50)
             sprite = engine.render_cloud_sprite(
                 cloud_w, cloud_h, cloud_color, alpha=40, seed=seed)
-            self._clouds.append({
+            cloud = {
                 'sprite': sprite,
                 'x': rng.uniform(-200, w),
                 'y': rng.uniform(h * 0.18, h * 0.55),
                 'vx': rng.uniform(3.0, 8.0),
-                'w': cloud_w,
+                'cw': cloud_w,
                 'h': cloud_h,
+            }
+            # For each cloud, create a thin horizontal glow sprite as a "moonlit rim"
+            cloud['rim_sprite'] = engine.glow_sprite(
+                int(cloud['cw'] // 3), (180, 195, 220), alpha_peak=25)
+            self._clouds.append(cloud)
+
+        # --- ground mist (5 drifting elliptical glows near bottom) ---
+        self._ground_mist = []
+        for _ in range(5):
+            rx = int(rng.uniform(120, 220))
+            self._ground_mist.append({
+                'x': rng.uniform(-100, w + 100),
+                'y': h - rng.randint(10, 30),
+                'rx': rx,
+                'speed': rng.uniform(1.5, 5),
+                'phase': rng.uniform(0, math.tau),
+                'sprite': engine.glow_sprite(rx, (15, 20, 50), alpha_peak=25),
+            })
+
+        # --- fireflies (8 slowly drifting, pulsing green-yellow dots) ---
+        self._fireflies = []
+        for _ in range(8):
+            self._fireflies.append({
+                'x': rng.uniform(w * 0.1, w * 0.9),
+                'y': rng.uniform(h * 0.5, h * 0.85),
+                'vx': rng.uniform(-0.4, 0.4),
+                'vy': rng.uniform(-0.3, 0.3),
+                'phase': rng.uniform(0, math.tau),
+                'sprite': engine.glow_sprite(4, (160, 200, 60), alpha_peak=120),
             })
 
         # --- horizon glow (subtle warm at very bottom) ---
@@ -443,12 +472,34 @@ class NightScene(BaseScene):
         # 8. Dark wispy clouds drifting slowly
         for cloud in self._clouds:
             cloud['x'] += cloud['vx'] * 0.016
-            if cloud['x'] > w + cloud['w']:
-                cloud['x'] = -cloud['w']
+            cw = cloud['cw']
+            if cloud['x'] > w + cw:
+                cloud['x'] = -cw
             cx_int = int(cloud['x'])
             cy_int = int(cloud['y'])
-            if cx_int + cloud['w'] > 0 and cx_int < w:
+            if cx_int + cw > 0 and cx_int < w:
                 scene.alpha_composite(cloud['sprite'], dest=(cx_int, cy_int))
+                # Moonlit rim glow at the top edge of each cloud
+                engine.stamp_glow(scene, int(cx_int + cw // 2), int(cy_int - 5), cloud['rim_sprite'])
+
+        # 8b. Ground mist
+        for mist in self._ground_mist:
+            mx = (mist['x'] + mist['speed'] * t) % (w + mist['rx'] * 2) - mist['rx']
+            my = mist['y'] + math.sin(t * 0.12 + mist['phase']) * 4
+            engine.stamp_glow(scene, int(mx), int(my), mist['sprite'])
+
+        # 8c. Fireflies
+        for ff in self._fireflies:
+            ff['x'] += ff['vx'] + math.sin(t * 0.4 + ff['phase']) * 0.5
+            ff['y'] += ff['vy'] + math.sin(t * 0.3 + ff['phase'] * 1.3) * 0.3
+            if ff['x'] < w * 0.05 or ff['x'] > w * 0.95:
+                ff['vx'] *= -1
+            if ff['y'] < h * 0.4 or ff['y'] > h * 0.9:
+                ff['vy'] *= -1
+            # Pulse: fireflies blink on and off
+            pulse = max(0, math.sin(t * 1.5 + ff['phase'] * 3))
+            if pulse > 0.3:
+                engine.stamp_glow(scene, int(ff['x']), int(ff['y']), ff['sprite'])
 
         # 9. Color grading: cool blue tint, low contrast, vignette
         arr = np.array(scene, dtype=np.float32)

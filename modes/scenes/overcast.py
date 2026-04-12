@@ -60,18 +60,12 @@ class OvercastScene(BaseScene):
                 })
             self._cloud_layers.append((cfg, clouds))
 
-        # === LIGHT PATCHES === (where sun tries to peek through)
-        self._light_patches = []
+        # Consume rng state for deterministic seeding (light patches rebuilt below as glow sprites)
         for _ in range(4):
-            self._light_patches.append({
-                'x': rng.uniform(0, w),
-                'y': rng.uniform(h * 0.1, h * 0.5),
-                'rx': rng.uniform(100, 250),
-                'ry': rng.uniform(40, 80),
-                'speed': rng.uniform(5, 15),
-                'phase': rng.uniform(0, math.tau),
-                'intensity': rng.uniform(0.5, 1.0),
-            })
+            rng.uniform(0, w); rng.uniform(h * 0.1, h * 0.5)
+            rng.uniform(100, 250); rng.uniform(40, 80)
+            rng.uniform(5, 15); rng.uniform(0, math.tau)
+            rng.uniform(0.5, 1.0)
 
         # === DISTANT RAIN VEILS === (translucent diagonal streaks)
         self._rain_veils = []
@@ -97,12 +91,57 @@ class OvercastScene(BaseScene):
                 'phase': rng.uniform(0, math.tau),
             })
 
-        # Pre-render cloud sprites (cached in engine, only built once)
+        # Pre-render cloud sprites + pre-blur at init (avoids per-frame blur)
         for cfg, clouds in self._cloud_layers:
             for cloud in clouds:
-                engine.render_cloud_sprite(
+                sprite = engine.render_cloud_sprite(
                     int(cloud['cw']), int(cloud['ch']),
                     cfg['color'], cfg['alpha'], cloud['seed'])
+                if cfg['blur'] > 0:
+                    cloud['_sprite'] = sprite.filter(
+                        ImageFilter.GaussianBlur(cfg['blur']))
+                else:
+                    cloud['_sprite'] = sprite
+
+        # === LIGHT PATCHES — pre-rendered glow sprites (no per-frame blur) ===
+        self._light_patches = []
+        for _ in range(4):
+            rx = int(rng.uniform(120, 260))
+            self._light_patches.append({
+                'x': rng.uniform(0, w),
+                'y': rng.uniform(h * 0.1, h * 0.4),
+                'rx': rx,
+                'speed': rng.uniform(3, 8),
+                'phase': rng.uniform(0, math.tau),
+                'sprite': engine.glow_sprite(rx, (100, 105, 120), alpha_peak=15),
+            })
+
+        # === GROUND MIST — pre-rendered glow sprites (no per-frame blur) ===
+        for puff in self._mist_puffs:
+            rx = int(puff['rx'])
+            puff['_sprite'] = engine.glow_sprite(rx, (75, 80, 95), alpha_peak=puff['alpha'])
+
+        # === SPARSE RAIN DROPS — slow, translucent streaks ===
+        self._raindrops = []
+        for _ in range(6):
+            self._raindrops.append({
+                'x': rng.uniform(0, w),
+                'y': rng.uniform(-h, h),
+                'speed': rng.uniform(3, 6),
+                'length': rng.uniform(20, 50),
+                'alpha': rng.randint(30, 60),
+            })
+
+        # === PRE-COMPUTE VIGNETTE as RGBA overlay ===
+        x_coords = np.linspace(-1, 1, w, dtype=np.float32)
+        y_coords = np.linspace(-1, 1, h, dtype=np.float32)
+        X, Y = np.meshgrid(x_coords, y_coords)
+        vignette = np.clip(
+            1.0 - 0.18 * (X ** 2 * 0.3 + Y ** 2 * 0.7), 0.6, 1.0)
+        vig_alpha = ((1.0 - vignette) * 255).astype(np.uint8)
+        vig_rgba = np.zeros((h, w, 4), dtype=np.uint8)
+        vig_rgba[..., 3] = vig_alpha
+        self._vignette_img = Image.fromarray(vig_rgba, 'RGBA')
 
     def render(self, t, weather_data):
         w, h = self.w, self.h
@@ -116,46 +155,23 @@ class OvercastScene(BaseScene):
             arr[..., :3] = np.clip(arr[..., :3] * (1.0 + ambient_shift), 0, 255)
             scene = Image.fromarray(arr.astype(np.uint8), 'RGBA')
 
-        # === LIGHT PATCHES === (diffuse light breaking through cloud gaps)
-        light_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        light_draw = ImageDraw.Draw(light_layer)
+        # === LIGHT PATCHES === stamp pre-rendered glow sprites (no per-frame blur)
         for lp in self._light_patches:
             lx = (lp['x'] + lp['speed'] * t) % (w + lp['rx'] * 2) - lp['rx']
-            ly = lp['y'] + math.sin(t * 0.2 + lp['phase']) * 15
-            # Pulsing intensity
-            pulse = 0.5 + 0.5 * math.sin(t * 0.3 + lp['phase'] * 2)
-            alpha = int(18 * lp['intensity'] * pulse)
-            rx = int(lp['rx'] + math.sin(t * 0.15 + lp['phase']) * 20)
-            ry = int(lp['ry'] + math.sin(t * 0.2 + lp['phase']) * 8)
-            # Warm-tinted light
-            light_draw.ellipse(
-                [int(lx) - rx, int(ly) - ry, int(lx) + rx, int(ly) + ry],
-                fill=(140, 135, 115, alpha))
-        light_layer = engine.bloom(light_layer, radius=16, intensity=1.0, downsample=4)
-        scene = engine.additive_composite(scene, light_layer)
+            ly = lp['y'] + math.sin(t * 0.2 + lp['phase']) * 8
+            engine.stamp_glow(scene, int(lx), int(ly), lp['sprite'])
 
-        # === CLOUD LAYERS (back to front) ===
-        for li, (cfg, clouds) in enumerate(self._cloud_layers):
-            cloud_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-
+        # === CLOUD LAYERS (back to front) -- use pre-blurred sprites directly ===
+        for cfg, clouds in self._cloud_layers:
             for cloud in clouds:
-                cx = (cloud['x'] + cloud['speed'] * t) % (w + cloud['cw'] + 200) - cloud['cw'] - 100
+                cx = ((cloud['x'] + cloud['speed'] * t)
+                      % (w + cloud['cw'] + 200) - cloud['cw'] - 100)
                 cy = cloud['y'] + math.sin(t * 0.12 + cloud['phase']) * 8
-
-                sprite = engine.render_cloud_sprite(
-                    int(cloud['cw']), int(cloud['ch']),
-                    cfg['color'], cfg['alpha'], cloud['seed'])
-
+                sprite = cloud['_sprite']
                 px, py = int(cx), int(cy)
-                if px + sprite.size[0] > 0 and px < w and py + sprite.size[1] > 0 and py < h:
-                    cloud_layer.alpha_composite(sprite, dest=(px, py))
-
-            # Far layer gets blur for atmospheric depth
-            if cfg['blur'] > 0:
-                cloud_layer = cloud_layer.filter(
-                    ImageFilter.GaussianBlur(cfg['blur']))
-
-            scene.alpha_composite(cloud_layer)
+                if (px + sprite.size[0] > 0 and px < w
+                        and py + sprite.size[1] > 0 and py < h):
+                    scene.alpha_composite(sprite, dest=(px, py))
 
         # === DISTANT RAIN VEILS === (translucent diagonal streaks)
         rain_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
@@ -179,21 +195,24 @@ class OvercastScene(BaseScene):
         rain_layer = engine.bloom(rain_layer, radius=4, intensity=1.0, downsample=4)
         scene.alpha_composite(rain_layer)
 
-        # === GROUND MIST === (atmospheric low fog)
-        mist_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        mist_draw = ImageDraw.Draw(mist_layer)
+        # === SPARSE RAIN DROPS === (slow, translucent streaks)
+        drop_draw = ImageDraw.Draw(scene)
+        for drop in self._raindrops:
+            drop['y'] += drop['speed']
+            if drop['y'] > h:
+                drop['y'] = random.uniform(-50, -10)
+                drop['x'] = random.uniform(0, w)
+            dx = int(drop['x'])
+            dy = int(drop['y'])
+            drop_draw.line(
+                [(dx, dy), (dx - 1, dy + int(drop['length']))],
+                fill=(80, 90, 120, drop['alpha']), width=1)
+
+        # === GROUND MIST === stamp pre-rendered glow sprites (no per-frame blur)
         for puff in self._mist_puffs:
             mx = (puff['x'] + puff['speed'] * t) % (w + puff['rx'] * 2) - puff['rx']
             my = puff['y'] + math.sin(t * 0.25 + puff['phase']) * 6
-            # Breathing alpha
-            breath = 0.7 + 0.3 * math.sin(t * 0.2 + puff['phase'] * 1.5)
-            ma = int(puff['alpha'] * breath)
-            engine.draw_soft_ellipse(
-                mist_draw, int(mx), int(my),
-                int(puff['rx']), int(puff['ry']),
-                (75, 80, 95), ma)
-        mist_layer = engine.bloom(mist_layer, radius=8, intensity=1.0, downsample=4)
-        scene.alpha_composite(mist_layer)
+            engine.stamp_glow(scene, int(mx), int(my), puff['_sprite'])
 
         # === BOTTOM ATMOSPHERE === (gradient fade at very bottom)
         bottom_h = 50
@@ -206,15 +225,8 @@ class OvercastScene(BaseScene):
             bottom_arr[y, :, 3] = int(frac ** 1.5 * 40)
         scene.alpha_composite(Image.fromarray(bottom_arr, 'RGBA'))
 
-        # === SUBTLE VIGNETTE === (darken edges for mood)
-        arr = np.array(scene, dtype=np.float32)
-        x_coords = np.linspace(-1, 1, w, dtype=np.float32)
-        y_coords = np.linspace(-1, 1, h, dtype=np.float32)
-        X, Y = np.meshgrid(x_coords, y_coords)
-        vig = 1.0 - 0.18 * (X ** 2 * 0.3 + Y ** 2 * 0.7)
-        vig = np.clip(vig, 0.6, 1.0)
-        arr[..., :3] *= vig[..., np.newaxis]
-        scene = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), 'RGBA')
+        # === SUBTLE VIGNETTE === pre-rendered RGBA overlay
+        scene.alpha_composite(self._vignette_img)
 
         return scene
 

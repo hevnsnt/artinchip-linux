@@ -94,20 +94,46 @@ class ThunderScene(BaseScene):
                 'phase': rng.uniform(0, math.tau),
             })
 
-        # Pre-render cloud sprites
+        # Pre-render cloud sprites + pre-blur at init (avoids per-frame blur)
         for cfg, clouds in self._cloud_layers:
             for cloud in clouds:
-                engine.render_cloud_sprite(
+                sprite = engine.render_cloud_sprite(
                     int(cloud['cw']), int(cloud['ch']),
                     cfg['color'], cfg['alpha'], cloud['seed'])
+                if cfg['blur'] > 0:
+                    cloud['_sprite'] = sprite.filter(
+                        ImageFilter.GaussianBlur(cfg['blur']))
+                else:
+                    cloud['_sprite'] = sprite
 
-        # Pre-compute vignette mask (heavier than overcast for drama)
+        # === LIGHT PATCHES — pre-rendered glow sprites (drifting sky glows) ===
+        self._light_patches = []
+        for _ in range(3):
+            rx = int(rng.uniform(140, 300))
+            self._light_patches.append({
+                'x': rng.uniform(0, w),
+                'y': rng.uniform(h * 0.05, h * 0.35),
+                'rx': rx,
+                'speed': rng.uniform(3, 10),
+                'phase': rng.uniform(0, math.tau),
+                'sprite': engine.glow_sprite(rx, (80, 90, 140), alpha_peak=12),
+            })
+
+        # === GROUND MIST — pre-rendered glow sprites (no per-frame blur) ===
+        for puff in self._mist_puffs:
+            rx = int(puff['rx'])
+            puff['_sprite'] = engine.glow_sprite(rx, (20, 18, 32), alpha_peak=puff['alpha'])
+
+        # === PRE-COMPUTE VIGNETTE as RGBA overlay ===
         x_coords = np.linspace(-1, 1, w, dtype=np.float32)
         y_coords = np.linspace(-1, 1, h, dtype=np.float32)
         X, Y = np.meshgrid(x_coords, y_coords)
-        self._vignette = np.clip(
-            1.0 - 0.22 * (X ** 2 * 0.3 + Y ** 2 * 0.7), 0.55, 1.0
-        ).astype(np.float32)
+        vignette = np.clip(
+            1.0 - 0.22 * (X ** 2 * 0.3 + Y ** 2 * 0.7), 0.55, 1.0)
+        vig_alpha = ((1.0 - vignette) * 255).astype(np.uint8)
+        vig_rgba = np.zeros((h, w, 4), dtype=np.uint8)
+        vig_rgba[..., 3] = vig_alpha
+        self._vignette_img = Image.fromarray(vig_rgba, 'RGBA')
 
     def _respawn_drop(self, i, rng_seed=None):
         """Reset rain drop above the screen."""
@@ -139,22 +165,23 @@ class ThunderScene(BaseScene):
             arr[..., :3] = np.clip(arr[..., :3] * (1.0 + flicker), 0, 255)
             scene = Image.fromarray(arr.astype(np.uint8), 'RGBA')
 
-        # 3. Cloud layers (back to front) -- volumetric sprites
+        # 3. Light patches -- stamp pre-rendered glow sprites (no per-frame blur)
+        for lp in self._light_patches:
+            lx = (lp['x'] + lp['speed'] * t) % (w + lp['rx'] * 2) - lp['rx']
+            ly = lp['y'] + math.sin(t * 0.15 + lp['phase']) * 10
+            engine.stamp_glow(scene, int(lx), int(ly), lp['sprite'])
+
+        # 4. Cloud layers (back to front) -- use pre-blurred sprites directly
         for cfg, clouds in self._cloud_layers:
-            cloud_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
             for cloud in clouds:
-                cx = (cloud['x'] + cloud['speed'] * t) % (w + cloud['cw'] + 300) - cloud['cw'] - 150
-                cy = cloud['y'] + math.sin(t * 0.1 + cloud['phase']) * 10
-                sprite = engine.render_cloud_sprite(
-                    int(cloud['cw']), int(cloud['ch']),
-                    cfg['color'], cfg['alpha'], cloud['seed'])
+                cx = ((cloud['x'] + cloud['speed'] * t)
+                      % (w + cloud['cw'] + 200) - cloud['cw'] - 100)
+                cy = cloud['y'] + math.sin(t * 0.10 + cloud['phase']) * 7
+                sprite = cloud['_sprite']
                 px, py = int(cx), int(cy)
-                if px + sprite.size[0] > 0 and px < w and py + sprite.size[1] > 0 and py < h:
-                    cloud_layer.alpha_composite(sprite, dest=(px, py))
-            if cfg['blur'] > 0:
-                cloud_layer = cloud_layer.filter(
-                    ImageFilter.GaussianBlur(cfg['blur']))
-            scene.alpha_composite(cloud_layer)
+                if (px + sprite.size[0] > 0 and px < w
+                        and py + sprite.size[1] > 0 and py < h):
+                    scene.alpha_composite(sprite, dest=(px, py))
 
         # 4. Lightning logic
         self._bolt_cooldown -= 1
@@ -171,6 +198,7 @@ class ThunderScene(BaseScene):
             margin = w * 0.1
             x_start = random.uniform(margin, w - margin)
             x_end = x_start + random.uniform(-30, 30)
+            self._flash_x = int(x_start)
             self._bolt_segments = engine.generate_lightning(
                 int(x_start), 10, int(x_end), h - 10)
 
@@ -190,8 +218,15 @@ class ThunderScene(BaseScene):
                 arr[..., :3] * (1.0 + 0.2 * self._flash_intensity), 0, 255)
             scene = Image.fromarray(arr.astype(np.uint8), 'RGBA')
 
+            # Ground flash glow under lightning strike
+            ground_glow = engine.glow_sprite(
+                300, (100, 110, 180),
+                alpha_peak=int(40 * self._flash_intensity))
+            flash_x = self._flash_x if hasattr(self, '_flash_x') else w // 2
+            engine.stamp_glow(scene, flash_x, h - 20, ground_glow)
+
         # 7. Heavy rain -- 280 drops with gradient-fade streaks
-        self._rain.update(dt=1.0)
+        self._rain.update(dt=max(dt, 0.01) * 8.0)
         rain_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
         rain_draw = ImageDraw.Draw(rain_layer)
         indices = self._rain.get_sorted_indices()
@@ -272,7 +307,7 @@ class ThunderScene(BaseScene):
         # 9. Ripples -- expanding flat ellipses
         remaining_r = []
         for rp in self._ripples:
-            rp['life'] -= 1
+            rp['life'] -= dt_scale
             if rp['life'] > 0:
                 progress = 1.0 - rp['life'] / rp['max_life']
                 r = max(1, int(rp['max_r'] * progress))
@@ -294,20 +329,11 @@ class ThunderScene(BaseScene):
         reflected = Image.fromarray(ref_arr.astype(np.uint8), 'RGBA')
         scene.alpha_composite(reflected, dest=(0, h - reflect_h))
 
-        # 11. Ground mist -- dark-toned puffs, breathing, blurred
-        mist_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        mist_draw = ImageDraw.Draw(mist_layer)
+        # 11. Ground mist -- stamp pre-rendered glow sprites (no per-frame blur)
         for puff in self._mist_puffs:
             mx = (puff['x'] + puff['speed'] * t) % (w + puff['rx'] * 2) - puff['rx']
             my = puff['y'] + math.sin(t * 0.22 + puff['phase']) * 5
-            breath = 0.65 + 0.35 * math.sin(t * 0.18 + puff['phase'] * 1.5)
-            ma = int(puff['alpha'] * breath)
-            engine.draw_soft_ellipse(
-                mist_draw, int(mx), int(my),
-                int(puff['rx']), int(puff['ry']),
-                (20, 18, 32), ma)
-        mist_layer = engine.bloom(mist_layer, radius=8, intensity=1.0, downsample=4)
-        scene.alpha_composite(mist_layer)
+            engine.stamp_glow(scene, int(mx), int(my), puff['_sprite'])
 
         # 12. Bottom atmosphere -- dark gradient at base
         bottom_h = 55
@@ -320,10 +346,8 @@ class ThunderScene(BaseScene):
             bottom_arr[y_row, :, 3] = int(frac ** 1.5 * 50)
         scene.alpha_composite(Image.fromarray(bottom_arr, 'RGBA'))
 
-        # 13. Vignette -- 0.22 strength, heavier than overcast
-        arr = np.array(scene, dtype=np.float32)
-        arr[..., :3] *= self._vignette[..., np.newaxis]
-        scene = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), 'RGBA')
+        # 13. Vignette -- pre-rendered RGBA overlay
+        scene.alpha_composite(self._vignette_img)
 
         return scene
 

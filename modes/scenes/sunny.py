@@ -86,6 +86,67 @@ class SunnyScene(BaseScene):
         self._vignette = np.clip(
             1.0 - 0.10 * (X ** 2 * 0.3 + Y ** 2 * 0.7), 0.7, 1.0)
 
+        # --- pre-render sun disc sprite (static -- never changes frame to frame) ---
+        sun_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+        sun_arr = np.array(sun_layer)
+        n = self._sun_norm[self._sun_mask]
+        r_ch = np.where(n < 0.25, 255,
+               np.where(n < 0.55, 255,
+               np.where(n < 0.85, (255 - (n - 0.55) / 0.30 * 15).clip(240, 255),
+                        235)))
+        g_ch = np.where(n < 0.25, 255,
+               np.where(n < 0.55, (255 - (n - 0.25) / 0.30 * 30),
+               np.where(n < 0.85, (225 - (n - 0.55) / 0.30 * 50),
+                        155)))
+        b_ch = np.where(n < 0.25, 245,
+               np.where(n < 0.55, (245 - (n - 0.25) / 0.30 * 120),
+               np.where(n < 0.85, (125 - (n - 0.55) / 0.30 * 85),
+                        25)))
+        alpha = np.where(n < 0.65, 255.0,
+                np.clip(np.maximum(0, (1.0 - n) / 0.70) ** 1.8 * 255, 0, 255))
+        sun_arr[self._sun_mask, 0] = np.clip(r_ch, 0, 255).astype(np.uint8)
+        sun_arr[self._sun_mask, 1] = np.clip(g_ch, 0, 255).astype(np.uint8)
+        sun_arr[self._sun_mask, 2] = np.clip(b_ch, 0, 255).astype(np.uint8)
+        sun_arr[self._sun_mask, 3] = alpha.astype(np.uint8)
+        self._sun_sprite = Image.fromarray(sun_arr, 'RGBA')
+
+        # --- pre-render anamorphic streak sprite (static horizontal glow) ---
+        streak_arr = np.zeros((h, w, 4), dtype=np.uint8)
+        x_coords = np.arange(w, dtype=np.float32)
+        x_falloff = np.exp(-np.abs(x_coords - scx) / (w * 0.30))
+        core_top = max(0, scy - 3)
+        core_bot = min(h, scy + 3)
+        core_alpha = np.clip(x_falloff * 50, 0, 255).astype(np.uint8)
+        for row in range(core_top, core_bot):
+            streak_arr[row, :, 0] = 255
+            streak_arr[row, :, 1] = 242
+            streak_arr[row, :, 2] = 205
+            streak_arr[row, :, 3] = core_alpha
+        halo_top = max(0, scy - 8)
+        halo_bot = min(h, scy + 8)
+        halo_alpha = np.clip(x_falloff * 22, 0, 255).astype(np.uint8)
+        for row in range(halo_top, halo_bot):
+            if core_top <= row < core_bot:
+                continue
+            streak_arr[row, :, 0] = 255
+            streak_arr[row, :, 1] = 218
+            streak_arr[row, :, 2] = 155
+            streak_arr[row, :, 3] = halo_alpha
+        self._streak_sprite = Image.fromarray(streak_arr, 'RGBA')
+
+        # --- wispy cirrus clouds (4 high, thin, bright wisps) ---
+        self._wisps = []
+        for i in range(4):
+            cw = rng.randint(600, 900)
+            ch = rng.randint(30, 55)
+            self._wisps.append({
+                'x': rng.uniform(-200, w),
+                'y': rng.uniform(20, 120),
+                'cw': cw, 'ch': ch,
+                'speed': rng.uniform(3, 8),
+                'sprite': engine.render_cloud_sprite(cw, ch, (240, 245, 255), 70, seed=rng.randint(0, 99999)),
+            })
+
         # --- pre-compute warm horizon glow (stronger, happier, bottom 120px) ---
         glow_h = 120
         glow_arr = np.zeros((h, w, 4), dtype=np.uint8)
@@ -105,40 +166,12 @@ class SunnyScene(BaseScene):
     def render(self, t: float, weather_data: dict) -> Image.Image:
         w, h = self.w, self.h
         scx, scy, sr = self._sun_cx, self._sun_cy, self._sun_r
-        norm = self._sun_norm
-        mask = self._sun_mask
 
         # 1. Base gradient copy
         scene = self._gradient.copy()
 
-        # 2. Sun radial gradient -- smooth color bands with feathered alpha
-        sun_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        sun_arr = np.array(sun_layer)
-
-        n = norm[mask]
-        # Color: white-hot center -> yellow -> golden -> warm orange edge
-        r_ch = np.where(n < 0.25, 255,
-               np.where(n < 0.55, 255,
-               np.where(n < 0.85, (255 - (n - 0.55) / 0.30 * 15).clip(240, 255),
-                        235)))
-        g_ch = np.where(n < 0.25, 255,
-               np.where(n < 0.55, (255 - (n - 0.25) / 0.30 * 30),
-               np.where(n < 0.85, (225 - (n - 0.55) / 0.30 * 50),
-                        155)))
-        b_ch = np.where(n < 0.25, 245,
-               np.where(n < 0.55, (245 - (n - 0.25) / 0.30 * 120),
-               np.where(n < 0.85, (125 - (n - 0.55) / 0.30 * 85),
-                        25)))
-        # Alpha: solid inside 0.65, smooth power-curve feather to edge
-        alpha = np.where(n < 0.65, 255.0,
-                np.clip(np.maximum(0, (1.0 - n) / 0.70) ** 1.8 * 255, 0, 255))
-
-        sun_arr[mask, 0] = np.clip(r_ch, 0, 255).astype(np.uint8)
-        sun_arr[mask, 1] = np.clip(g_ch, 0, 255).astype(np.uint8)
-        sun_arr[mask, 2] = np.clip(b_ch, 0, 255).astype(np.uint8)
-        sun_arr[mask, 3] = alpha.astype(np.uint8)
-
-        sun_layer = Image.fromarray(sun_arr, 'RGBA')
+        # 2. Sun radial gradient -- pre-rendered sprite composited directly
+        sun_layer = self._sun_sprite
         scene.alpha_composite(sun_layer)
 
         # 3. Sun bloom -- multi-pass bloom on just the sun core
@@ -196,35 +229,13 @@ class SunnyScene(BaseScene):
         ray_layer = engine.bloom(ray_layer, radius=8, intensity=1.0, downsample=4)
         scene = engine.additive_composite(scene, ray_layer)
 
-        # 5. Anamorphic streak -- horizontal light through sun, full width
-        streak_arr = np.zeros((h, w, 4), dtype=np.uint8)
-        x_coords = np.arange(w, dtype=np.float32)
-        x_falloff = np.exp(-np.abs(x_coords - scx) / (w * 0.30))
+        # 5. Anamorphic streak -- pre-rendered sprite composited directly
+        scene = engine.additive_composite(scene, self._streak_sprite)
 
-        # Thin bright core (6px)
-        core_top = max(0, scy - 3)
-        core_bot = min(h, scy + 3)
-        core_alpha = np.clip(x_falloff * 50, 0, 255).astype(np.uint8)
-        for row in range(core_top, core_bot):
-            streak_arr[row, :, 0] = 255
-            streak_arr[row, :, 1] = 242
-            streak_arr[row, :, 2] = 205
-            streak_arr[row, :, 3] = core_alpha
-
-        # Wider dim halo (16px)
-        halo_top = max(0, scy - 8)
-        halo_bot = min(h, scy + 8)
-        halo_alpha = np.clip(x_falloff * 22, 0, 255).astype(np.uint8)
-        for row in range(halo_top, halo_bot):
-            if core_top <= row < core_bot:
-                continue
-            streak_arr[row, :, 0] = 255
-            streak_arr[row, :, 1] = 218
-            streak_arr[row, :, 2] = 155
-            streak_arr[row, :, 3] = halo_alpha
-
-        streak_layer = Image.fromarray(streak_arr, 'RGBA')
-        scene = engine.additive_composite(scene, streak_layer)
+        # 5b. Wispy cirrus clouds drifting across the sky
+        for wisp in self._wisps:
+            wx = int((wisp['x'] + wisp['speed'] * t) % (w + wisp['cw'] + 100) - wisp['cw'])
+            scene.alpha_composite(wisp['sprite'], dest=(wx, int(wisp['y'])))
 
         # 6. Lens flare -- 6 glow sprites pulsing along sun-to-center axis
         cx_scr, cy_scr = w // 2, h // 2
@@ -236,9 +247,12 @@ class SunnyScene(BaseScene):
             pulse_f = 0.75 + 0.25 * math.sin(t * 1.5 + fe['t'] * 3.0)
             fx = int(scx + ax_dx * fe['t'])
             fy = int(scy + ax_dy * fe['t'])
-            eff_alpha = int(fe['alpha'] * pulse_f)
-            sprite = engine.glow_sprite(
-                fe['radius'], fe['color'], alpha_peak=eff_alpha)
+            # Fetch sprite at fixed alpha (cached), then scale for pulse
+            sprite = engine.glow_sprite(fe['radius'], fe['color'], alpha_peak=fe['alpha'])
+            if abs(pulse_f - 1.0) > 0.02:
+                arr = np.array(sprite)
+                arr[..., 3] = np.clip(arr[..., 3].astype(np.float32) * pulse_f, 0, 255).astype(np.uint8)
+                sprite = Image.fromarray(arr, 'RGBA')
             engine.stamp_glow(flare_layer, fx, fy, sprite)
 
         scene = engine.additive_composite(scene, flare_layer)

@@ -38,18 +38,44 @@ class FogScene(BaseScene):
                 })
             self.fog_layers.append(puffs)
 
-        # Static silhouette positions (very faint dark shapes suggesting buildings/trees)
-        self.silhouettes = [
-            {'type': 'rect', 'x': int(w * 0.15), 'y': h - 60, 'sw': 40, 'sh': 60, 'alpha': 10},
-            {'type': 'tri',  'x': int(w * 0.55), 'y': h - 80, 'sw': 50, 'sh': 80, 'alpha': 8},
-            {'type': 'rect', 'x': int(w * 0.82), 'y': h - 50, 'sw': 55, 'sh': 50, 'alpha': 12},
+        # Pre-render silhouette layer with bloom at init (not per-frame)
+        self._sil_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+        sil_draw = ImageDraw.Draw(self._sil_layer)
+        shapes = [
+            (100, h - 120, 180, h, 40),   # tall building
+            (250, h - 80, 380, h, 35),    # shorter building
+            (500, h - 100, 600, h, 38),   # medium building
+            (700, h - 60, 820, h, 30),    # low building
+            (950, h - 140, 1050, h, 42),  # tall tower
+            (1200, h - 70, 1350, h, 32),  # wide low building
+            (1500, h - 90, 1600, h, 36),  # medium
+            (1700, h - 110, 1820, h, 40), # tall
         ]
+        for x1, y1, x2, y2, alpha in shapes:
+            sil_draw.rectangle([x1, y1, x2, y2], fill=(20, 22, 30, alpha))
+        self._sil_layer = engine.bloom(self._sil_layer, radius=6, intensity=1.0, downsample=4)
+
+        # Visibility windows (areas of slightly less fog)
+        self._windows = []
+        for _ in range(3):
+            rx = int(rng.uniform(60, 100))
+            self._windows.append({
+                'x': rng.uniform(0, w),
+                'y': rng.uniform(h * 0.4, h * 0.7),
+                'rx': rx,
+                'speed': rng.uniform(1, 4),
+                'phase': rng.uniform(0, math.tau),
+                'sprite': engine.glow_sprite(rx, (120, 125, 140), alpha_peak=15),
+            })
+
+        # Cache gradient as instance variable
+        self._gradient = engine.gradient_fill(w, h, self.grad_top, self.grad_bot)
 
     def render(self, t, weather_data):
         w, h = self.w, self.h
 
-        # 1. Gradient base
-        base = engine.gradient_fill(w, h, self.grad_top, self.grad_bot)
+        # 1. Gradient base (cached at init)
+        base = self._gradient.copy()
 
         # 2. Noise fog density with vertical gradient
         nf = engine.noise_field(w, h, t * 0.2, scale=0.003, octaves=2)
@@ -100,27 +126,16 @@ class FogScene(BaseScene):
                 band_layer = engine.bloom(band_layer, radius=blur_by_layer[li] * 2, intensity=1.0, downsample=4)
             base = Image.alpha_composite(base, band_layer)
 
-        # 4. Optional silhouettes -- very faint dark shapes near bottom
-        sil_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(sil_layer)
+        # 4. Visibility windows -- drifting areas of slightly less fog
+        for win in self._windows:
+            wx = (win['x'] + win['speed'] * t) % (w + win['rx'] * 2) - win['rx']
+            wy = win['y'] + math.sin(t * 0.1 + win['phase']) * 5
+            engine.stamp_glow(base, int(wx), int(wy), win['sprite'])
 
-        for sil in self.silhouettes:
-            a = sil['alpha']
-            sx, sy, sw, sh = sil['x'], sil['y'], sil['sw'], sil['sh']
-            fill = (10, 12, 18, a)
-            if sil['type'] == 'rect':
-                draw.rectangle([sx, sy, sx + sw, sy + sh], fill=fill)
-            elif sil['type'] == 'tri':
-                draw.polygon([
-                    (sx, sy + sh),
-                    (sx + sw // 2, sy),
-                    (sx + sw, sy + sh),
-                ], fill=fill)
+        # 5. Silhouettes -- pre-rendered at init with bloom
+        base = Image.alpha_composite(base, self._sil_layer)
 
-        sil_layer = engine.bloom(sil_layer, radius=6, intensity=1.0, downsample=4)
-        base = Image.alpha_composite(base, sil_layer)
-
-        # 5. Color grade
+        # 6. Color grade
         base = engine.color_grade(base, 'fog')
         return base
 

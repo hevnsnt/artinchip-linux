@@ -92,6 +92,34 @@ class SnowScene(BaseScene):
                 'phase': rng.uniform(0, math.tau),
             })
 
+        # --- BRIGHT SNOW GROUND REFLECTION ---
+        self._snow_ground = Image.new('RGBA', (w, 30), (220, 230, 240, 50))
+        self._snow_ground_glow = engine.glow_sprite(200, (200, 215, 235), alpha_peak=35)
+
+        # --- DRIFTING LIGHT PATCHES (winter light through clouds) ---
+        self._light_patches = []
+        for _ in range(2):
+            rx = int(rng.uniform(140, 220))
+            self._light_patches.append({
+                'x': rng.uniform(0, w),
+                'y': rng.uniform(h * 0.1, h * 0.35),
+                'rx': rx,
+                'speed': rng.uniform(2, 6),
+                'phase': rng.uniform(0, math.tau),
+                'sprite': engine.glow_sprite(rx, (180, 190, 220), alpha_peak=10),
+            })
+
+        # --- MIST GLOW SPRITES (pre-rendered, replaces per-frame bloom) ---
+        self._mist_sprites = []
+        for puff in self._mist_puffs:
+            rx = int(puff.get('rx', rng.uniform(80, 200)))
+            alpha = puff.get('alpha', rng.randint(15, 35))
+            self._mist_sprites.append({
+                'x': puff['x'], 'y': puff['y'], 'rx': rx,
+                'speed': puff['speed'], 'phase': puff['phase'],
+                'sprite': engine.glow_sprite(rx, (200, 210, 230), alpha_peak=alpha),
+            })
+
         # --- ACCUMULATION state ---
         self._accumulation_height = 0.0
 
@@ -141,6 +169,12 @@ class SnowScene(BaseScene):
             if cfg['blur'] > 0:
                 layer = engine.bloom(layer, radius=cfg['blur'] * 2, intensity=1.0, downsample=4)
             scene.alpha_composite(layer)
+
+        # 3b. Drifting light patches (winter light through clouds)
+        for lp in self._light_patches:
+            lx = (lp['x'] + lp['speed'] * t) % (w + lp['rx'] * 2) - lp['rx']
+            ly = lp['y'] + math.sin(t * 0.12 + lp['phase']) * 6
+            engine.stamp_glow(scene, int(lx), int(ly), lp['sprite'])
 
         # 4. Snowflakes -- update positions with sine-wave drift
         drift = np.sin(t * 0.6 + p.phase) * 0.8 + p.vx * 0.3
@@ -240,21 +274,11 @@ class SnowScene(BaseScene):
                 acc_arr[ty:h, x_col, 3] = alpha
             scene.alpha_composite(Image.fromarray(acc_arr, 'RGBA'))
 
-        # 7. Ground mist -- cold-toned puffs, breathing, blurred
-        mist_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        mist_draw = ImageDraw.Draw(mist_layer)
-        for puff in self._mist_puffs:
-            mx = ((puff['x'] + puff['speed'] * t)
-                  % (w + puff['rx'] * 2) - puff['rx'])
-            my = puff['y'] + math.sin(t * 0.22 + puff['phase']) * 5
-            breath = 0.65 + 0.35 * math.sin(t * 0.18 + puff['phase'] * 1.4)
-            ma = int(puff['alpha'] * breath)
-            engine.draw_soft_ellipse(
-                mist_draw, int(mx), int(my),
-                int(puff['rx']), int(puff['ry']),
-                (140, 148, 165), ma)
-        mist_layer = engine.bloom(mist_layer, radius=6, intensity=1.0, downsample=4)
-        scene.alpha_composite(mist_layer)
+        # 7. Ground mist -- pre-rendered glow sprite stamps (replaces per-frame bloom)
+        for ms in self._mist_sprites:
+            mx = (ms['x'] + ms['speed'] * t) % (w + ms['rx'] * 2) - ms['rx']
+            my = ms['y'] + math.sin(t * 0.18 + ms['phase']) * 4
+            engine.stamp_glow(scene, int(mx), int(my), ms['sprite'])
 
         # 8. Bottom atmosphere -- soft white-blue gradient (cool tone)
         bottom_h = 55
@@ -266,6 +290,11 @@ class SnowScene(BaseScene):
             bottom_arr[y, :, 2] = 175
             bottom_arr[y, :, 3] = int(frac ** 1.5 * 45)
         scene.alpha_composite(Image.fromarray(bottom_arr, 'RGBA'))
+
+        # 8b. Bright snow ground reflection
+        scene.alpha_composite(self._snow_ground, dest=(0, h - 30))
+        for gx in range(0, w, 400):
+            engine.stamp_glow(scene, gx + 200, h - 15, self._snow_ground_glow)
 
         # 9. Cool desaturation -- blend RGB toward gray (8%)
         arr = np.array(scene, dtype=np.float32)
