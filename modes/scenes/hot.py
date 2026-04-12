@@ -271,18 +271,7 @@ class HotScene(BaseScene):
                 engine.stamp_glow(ember_layer, ex, ey, sprite)
         scene.alpha_composite(ember_layer)
 
-        # 8. Bottom atmosphere -- warm dark gradient fade
-        bottom_h = 55
-        bottom_arr = np.zeros((h, w, 4), dtype=np.uint8)
-        for y in range(h - bottom_h, h):
-            frac = (y - (h - bottom_h)) / bottom_h
-            bottom_arr[y, :, 0] = 60
-            bottom_arr[y, :, 1] = 15
-            bottom_arr[y, :, 2] = 5
-            bottom_arr[y, :, 3] = int(frac ** 1.5 * 50)
-        scene.alpha_composite(Image.fromarray(bottom_arr, 'RGBA'))
-
-        # 9. Ground-level heat glow (centered above bottom edge)
+        # 8. Ground-level heat glow
         engine.stamp_glow(scene, w // 2, h - 30, self._heat_glow)
 
         # 10. Vignette -- heavier 0.20 strength (pre-computed)

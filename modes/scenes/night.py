@@ -92,7 +92,7 @@ class NightScene(BaseScene):
 
         # --- shooting stars state ---
         self._shooters = []
-        self._next_shooter_time = rng.uniform(2.0, 5.0)
+        self._next_shooter_time = rng.uniform(15.0, 45.0)
         self._rng = rng
 
         # --- dark wispy clouds (2 slow-moving) ---
@@ -377,7 +377,7 @@ class NightScene(BaseScene):
         if t >= self._next_shooter_time:
             if len(self._shooters) < 2:
                 self._spawn_shooter(t)
-            self._next_shooter_time = t + self._rng.uniform(5.0, 10.0)
+            self._next_shooter_time = t + self._rng.uniform(30.0, 90.0)
 
         self._shooters = [s for s in self._shooters if t - s['birth'] < s['life']]
 
