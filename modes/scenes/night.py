@@ -8,6 +8,7 @@ color grading.  Designed to feel peaceful and enchanting on a
 """
 
 import math
+import os
 import random
 
 import numpy as np
@@ -165,51 +166,31 @@ class NightScene(BaseScene):
     # ------------------------------------------------------------------
 
     def _build_moon_sprite(self) -> Image.Image:
-        """Pre-render the moon disc with subtle craters."""
+        """Load photorealistic moon disc from NASA LROC texture."""
         r = self._moon_r
-        size = r * 2 + 20
-        cx = cy = size // 2
+        target_size = r * 2 + 10
 
-        ys = np.arange(size, dtype=np.float32)
-        xs = np.arange(size, dtype=np.float32)
-        yy, xx = np.meshgrid(ys, xs, indexing='ij')
-        dist = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
-        norm = dist / r
-
-        arr = np.zeros((size, size, 4), dtype=np.float32)
-        mask = norm < 1.15
-        n = norm[mask]
-
-        # Warm white at center, slightly cooler at limb
-        r_ch = np.where(n < 0.6, 255, 255 - (n - 0.6) / 0.55 * 30).clip(220, 255)
-        g_ch = np.where(n < 0.6, 250, 250 - (n - 0.6) / 0.55 * 25).clip(220, 250)
-        b_ch = np.where(n < 0.6, 240, 240 - (n - 0.6) / 0.55 * 15).clip(220, 240)
-
-        # Solid inside, soft feather at edge
-        alpha = np.where(n < 0.85, 255.0,
-                np.clip((1.0 - n) / 0.30 * 255, 0, 255))
-
-        arr[mask, 0] = r_ch
-        arr[mask, 1] = g_ch
-        arr[mask, 2] = b_ch
-        arr[mask, 3] = alpha
-
-        img = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), 'RGBA')
-
-        # Subtle craters: very gentle darkening, not cartoon circles
-        draw = ImageDraw.Draw(img)
-        craters = [
-            (cx - 10, cy - 6, 6, 22),   # upper-left, subtle
-            (cx + 9, cy + 6, 4, 18),     # lower-right
-            (cx - 2, cy + 11, 3, 15),    # bottom-center
-        ]
-        for crx, cry, crr, cra in craters:
-            # Very gentle shadow -- just a hint of surface texture
-            draw.ellipse(
-                [crx - crr, cry - crr, crx + crr, cry + crr],
-                fill=(230, 225, 218, cra))
-
-        return img
+        # Load the pre-generated photorealistic moon disc
+        moon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 'moon_disc.png')
+        try:
+            moon = Image.open(moon_path).convert('RGBA')
+            moon = moon.resize((target_size, target_size), Image.LANCZOS)
+            return moon
+        except Exception:
+            # Fallback: simple bright disc if image not found
+            size = target_size
+            cx = cy = size // 2
+            arr = np.zeros((size, size, 4), dtype=np.uint8)
+            ys, xs = np.mgrid[:size, :size]
+            dist = np.sqrt((xs - cx) ** 2 + (ys - cy) ** 2).astype(np.float32)
+            mask = dist < r
+            arr[mask, 0] = 250
+            arr[mask, 1] = 245
+            arr[mask, 2] = 235
+            edge_fade = np.clip((r - dist) / 2.0, 0, 1)
+            arr[..., 3] = (edge_fade * 255 * mask).astype(np.uint8)
+            return Image.fromarray(arr, 'RGBA')
 
     def _build_moon_glow(self, w: int, h: int) -> Image.Image:
         """Pre-render full-canvas moon glow (bloom + atmospheric halo)."""

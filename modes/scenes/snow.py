@@ -291,8 +291,7 @@ class SnowScene(BaseScene):
             bottom_arr[y, :, 3] = int(frac ** 1.5 * 45)
         scene.alpha_composite(Image.fromarray(bottom_arr, 'RGBA'))
 
-        # 8b. Bright snow ground reflection
-        scene.alpha_composite(self._snow_ground, dest=(0, h - 30))
+        # 8b. Subtle snow ground glow (no solid strip)
         for gx in range(0, w, 400):
             engine.stamp_glow(scene, gx + 200, h - 15, self._snow_ground_glow)
 

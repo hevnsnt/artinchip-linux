@@ -282,8 +282,8 @@ class HotScene(BaseScene):
             bottom_arr[y, :, 3] = int(frac ** 1.5 * 50)
         scene.alpha_composite(Image.fromarray(bottom_arr, 'RGBA'))
 
-        # 9. Ground-level heat glow
-        engine.stamp_glow(scene, w // 2, h - 5, self._heat_glow)
+        # 9. Ground-level heat glow (centered above bottom edge)
+        engine.stamp_glow(scene, w // 2, h - 30, self._heat_glow)
 
         # 10. Vignette -- heavier 0.20 strength (pre-computed)
         arr = np.array(scene, dtype=np.float32)
