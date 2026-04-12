@@ -59,6 +59,18 @@ class PartlyCloudyScene(BaseScene):
         sun_arr[mask, 3] = alpha[mask].astype(np.uint8)
         self._sun_sprite = Image.fromarray(sun_arr, 'RGBA')
 
+        # --- pre-render sun bloom (static -- sun doesn't move) ---
+        self._sun_bloom = engine.bloom(self._sun_sprite, radius=40, intensity=1.5, downsample=4)
+
+        # --- pre-render anamorphic streak bloom (static -- tied to sun position) ---
+        streak_base = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+        streak_base_draw = ImageDraw.Draw(streak_base)
+        sh_half = 4
+        streak_base_draw.rectangle(
+            [0, self.sun_cy - sh_half, w, self.sun_cy + sh_half],
+            fill=(255, 240, 200, 25))
+        self._streak_bloom = engine.bloom(streak_base, radius=12, intensity=1.0, downsample=4)
+
         # --- 7 cloud configs with varying depth/size/speed ---
         rng = random.Random(77)
         self.clouds = []
@@ -142,9 +154,8 @@ class PartlyCloudyScene(BaseScene):
         # 2 --- Sun radial gradient (pre-rendered sprite) ---
         sun_layer = self._sun_sprite
 
-        # 3 --- Sun bloom (additive glow halo) ---
-        sun_bloomed = engine.bloom(sun_layer, radius=40, intensity=1.5, downsample=4)
-        scene = engine.additive_composite(scene, sun_bloomed)
+        # 3 --- Sun bloom (pre-rendered, static) ---
+        scene = engine.additive_composite(scene, self._sun_bloom)
         scene.alpha_composite(sun_layer)
 
         # 4 --- Compute shadow_factor from cloud-sun overlap ---
@@ -179,39 +190,42 @@ class PartlyCloudyScene(BaseScene):
                 frac1 = (s + 1) / 5
                 r0 = inner_r + (outer_r - inner_r) * frac0
                 r1 = inner_r + (outer_r - inner_r) * frac1
-                half0 = math.tau / 14 * (0.07 + 0.18 * frac0)
-                half1 = math.tau / 14 * (0.07 + 0.18 * frac1)
                 seg_alpha = int(base_alpha * (1.0 - frac1) ** 1.5)
                 if seg_alpha < 1:
                     continue
-                pts = [
-                    (scx + math.cos(angle - half0) * r0,
-                     scy + math.sin(angle - half0) * r0),
-                    (scx + math.cos(angle + half0) * r0,
-                     scy + math.sin(angle + half0) * r0),
-                    (scx + math.cos(angle + half1) * r1,
-                     scy + math.sin(angle + half1) * r1),
-                    (scx + math.cos(angle - half1) * r1,
-                     scy + math.sin(angle - half1) * r1),
-                ]
-                ray_draw.polygon(
-                    [(int(x), int(y)) for x, y in pts],
-                    fill=(255, 235, 180, seg_alpha))
 
-        ray_layer = engine.bloom(ray_layer, radius=8, intensity=1.0, downsample=4)
+                # Segment midline from r0 to r1
+                start = (int(scx + math.cos(angle) * r0),
+                         int(scy + math.sin(angle) * r0))
+                end = (int(scx + math.cos(angle) * r1),
+                       int(scy + math.sin(angle) * r1))
+
+                # Approximate segment width from half-angle spread
+                seg_mid_r = (r0 + r1) * 0.5
+                half_mid = math.tau / 14 * (0.07 + 0.18 * (frac0 + frac1) * 0.5)
+                seg_w = max(1, int(2 * seg_mid_r * math.sin(half_mid)))
+
+                # Multi-width drawing for soft edges (no bloom needed)
+                ray_draw.line([start, end],
+                              fill=(255, 235, 180, seg_alpha // 4),
+                              width=seg_w + 10)
+                ray_draw.line([start, end],
+                              fill=(255, 235, 180, seg_alpha // 2),
+                              width=seg_w + 5)
+                ray_draw.line([start, end],
+                              fill=(255, 235, 180, seg_alpha),
+                              width=seg_w)
         scene = engine.additive_composite(scene, ray_layer)
 
-        # 6 --- Anamorphic streak (subtle horizontal flare through sun) ---
-        streak_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        streak_draw = ImageDraw.Draw(streak_layer)
-        streak_alpha = int(25 * shadow_factor)
-        if streak_alpha > 1:
-            sh_half = 4
-            streak_draw.rectangle(
-                [0, scy - sh_half, w, scy + sh_half],
-                fill=(255, 240, 200, streak_alpha))
-            streak_layer = engine.bloom(streak_layer, radius=12, intensity=1.0, downsample=4)
-            scene = engine.additive_composite(scene, streak_layer)
+        # 6 --- Anamorphic streak (pre-rendered bloom, scaled by shadow) ---
+        if shadow_factor > 0.05:
+            if shadow_factor >= 0.99:
+                scene = engine.additive_composite(scene, self._streak_bloom)
+            else:
+                # Scale alpha by shadow_factor
+                sb_arr = np.array(self._streak_bloom)
+                sb_arr[..., 3] = (sb_arr[..., 3].astype(np.float32) * shadow_factor).astype(np.uint8)
+                scene = engine.additive_composite(scene, Image.fromarray(sb_arr, 'RGBA'))
 
         # 7 --- Cloud layers (sorted back-to-front by depth) ---
         cloud_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
@@ -248,10 +262,7 @@ class PartlyCloudyScene(BaseScene):
             pollen_draw.ellipse([px - sz, py - sz, px + sz, py + sz],
                                  fill=(255, 245, 200, p['alpha']))
 
-        # 8 --- Silver linings (bright glow on sun-facing cloud edges) ---
-        lining_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        ld = ImageDraw.Draw(lining_layer)
-        any_lining = False
+        # 8 --- Silver linings (glow sprites stamped on sun-facing edges) ---
         for cx, cy, cw_c, ch_c, ci in sorted_clouds:
             cloud_cx = cx + cw_c / 2
             cloud_cy = cy + ch_c / 2
@@ -259,13 +270,11 @@ class PartlyCloudyScene(BaseScene):
             dy_s = scy - cloud_cy
             dist_s = math.hypot(dx_s, dy_s)
             if dist_s < cw_c * 1.5 and dist_s > 10:
-                any_lining = True
                 depth = self.clouds[ci]['depth']
                 edge_angle = math.atan2(dy_s, dx_s)
                 lining_alpha = int(
                     max(30, min(80, 100 - dist_s * 0.04))
                     * (0.4 + 0.6 * depth) * shadow_factor)
-                # 8-10 bright ellipses along the sun-facing arc
                 n_blobs = 8 + int(2 * depth)
                 for li in range(n_blobs):
                     center = (n_blobs - 1) / 2
@@ -273,12 +282,8 @@ class PartlyCloudyScene(BaseScene):
                     lx = int(cloud_cx + math.cos(la) * cw_c * 0.44)
                     ly = int(cloud_cy + math.sin(la) * ch_c * 0.40)
                     lr = int(9 + 7 * (1 - abs(li - center) / (center + 0.1)))
-                    ld.ellipse(
-                        [lx - lr, ly - lr // 2, lx + lr, ly + lr // 2],
-                        fill=(248, 250, 255, lining_alpha))
-        if any_lining:
-            lining_layer = engine.bloom(lining_layer, radius=6, intensity=1.0, downsample=4)
-            scene = engine.additive_composite(scene, lining_layer)
+                    sprite = engine.glow_sprite(lr, (248, 250, 255), alpha_peak=lining_alpha)
+                    engine.stamp_glow(scene, lx, ly, sprite)
 
         # 9 --- Shadow overlay (darken when cloud covers sun) ---
         if shadow_factor < 0.95:

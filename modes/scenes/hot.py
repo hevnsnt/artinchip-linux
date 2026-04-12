@@ -9,7 +9,7 @@ import math
 import random
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 from scenes.base import BaseScene
 from scenes import engine
@@ -89,12 +89,19 @@ class HotScene(BaseScene):
         # Pre-render ground-level heat glow
         self._heat_glow = engine.glow_sprite(int(w // 3), (255, 80, 10), alpha_peak=25)
 
-        # Pre-compute vignette mask (heavier, 0.20 strength)
+        # Pre-compute vignette as RGBA overlay (heavier, 0.20 strength)
         x_coords = np.linspace(-1, 1, w, dtype=np.float32)
         y_coords = np.linspace(-1, 1, h, dtype=np.float32)
         X, Y = np.meshgrid(x_coords, y_coords)
-        self._vignette = np.clip(
+        vig = np.clip(
             1.0 - 0.20 * (X ** 2 * 0.3 + Y ** 2 * 0.7), 0.55, 1.0)
+        vig_alpha = ((1.0 - vig) * 255).astype(np.uint8)
+        vig_rgba = np.zeros((h, w, 4), dtype=np.uint8)
+        vig_rgba[..., 3] = vig_alpha
+        self._vignette_img = Image.fromarray(vig_rgba, 'RGBA')
+
+        # Pre-compute static tint overlay (replaces per-frame pulsing tint)
+        self._tint_overlay = Image.new('RGBA', (w, h), (60, 10, 0, 20))
 
     @staticmethod
     def _spawn_ember(w, h, initial=False):
@@ -120,13 +127,10 @@ class HotScene(BaseScene):
         # 1. Base gradient
         scene = self._gradient.copy()
 
-        # 2. Pulsing red tint -- slow threatening pulse
-        pulse = 0.5 + 0.5 * math.sin(t * 2.5)
-        tint_alpha = int(45 * pulse)
-        tint_overlay = Image.new('RGBA', (w, h), (200, 20, 0, tint_alpha))
-        scene.alpha_composite(tint_overlay)
+        # 2. Subtle red tint -- static overlay (pre-computed)
+        scene.alpha_composite(self._tint_overlay)
 
-        # 3. Heat shimmer -- noise-field horizontal displacement
+        # 3. Heat shimmer -- noise-field horizontal displacement (vectorized)
         noise = engine.noise_field(w, h, t, scale=0.02, octaves=2)
         scene_arr = np.array(scene, dtype=np.uint8)
 
@@ -135,11 +139,11 @@ class HotScene(BaseScene):
         vert_grad = np.linspace(0, 1, h, dtype=np.float32).reshape(-1, 1)
         displacement = displacement * vert_grad
 
-        shifted = np.empty_like(scene_arr)
-        col_indices = np.arange(w, dtype=np.float32)
-        for row in range(h):
-            src_cols = np.clip(col_indices - displacement[row], 0, w - 1).astype(np.int32)
-            shifted[row] = scene_arr[row, src_cols]
+        # Vectorized: build full (h, w) source-column index array
+        col_indices = np.arange(w, dtype=np.float32)  # (w,)
+        src_cols = np.clip(col_indices[np.newaxis, :] - displacement, 0, w - 1).astype(np.int32)
+        row_indices = np.arange(h)[:, np.newaxis].repeat(w, axis=1)
+        shifted = scene_arr[row_indices, src_cols]
 
         scene = Image.fromarray(shifted, 'RGBA')
 
@@ -148,9 +152,8 @@ class HotScene(BaseScene):
         pr = r + math.sin(t * 3) * 6
         ipr = int(pr)
 
-        # 4b. Flame tendrils on a separate layer
-        fire_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        fire_draw = ImageDraw.Draw(fire_layer)
+        # 4b. Flame tendrils -- soft-edge ellipses drawn directly on scene
+        fire_draw = ImageDraw.Draw(scene)
 
         num_flames = 20
         for fi in range(num_flames):
@@ -186,17 +189,22 @@ class HotScene(BaseScene):
                 ca = int((190 - 150 * frac) * max(0.0, min(1.0, 0.55 + 0.45 * (1 + flicker))))
                 ca = max(0, min(255, ca))
 
+                # Soft edges: outer glow ring, mid ring, then sharp core
                 fire_draw.ellipse(
-                    [fx - blob_r, fy - blob_r, fx + blob_r, fy + blob_r],
+                    [fx - blob_r - 4, fy - blob_r - 4,
+                     fx + blob_r + 4, fy + blob_r + 4],
+                    fill=(cr, cg, cb, ca // 3),
+                )
+                fire_draw.ellipse(
+                    [fx - blob_r - 2, fy - blob_r - 2,
+                     fx + blob_r + 2, fy + blob_r + 2],
+                    fill=(cr, cg, cb, ca // 2),
+                )
+                fire_draw.ellipse(
+                    [fx - blob_r, fy - blob_r,
+                     fx + blob_r, fy + blob_r],
                     fill=(cr, cg, cb, ca),
                 )
-
-        # 4c. Bloom the flame layer for fiery glow
-        fire_bloomed = engine.bloom(fire_layer, radius=10, intensity=1.2, downsample=4)
-        scene = engine.additive_composite(scene, fire_bloomed)
-
-        # 4d. Composite flame layer normally too (sharp detail on top of glow)
-        scene.alpha_composite(fire_layer)
 
         # 4e. Hot core -- numpy radial gradient
         norm = self._sun_norm
@@ -274,10 +282,8 @@ class HotScene(BaseScene):
         # 8. Ground-level heat glow
         engine.stamp_glow(scene, w // 2, h - 30, self._heat_glow)
 
-        # 10. Vignette -- heavier 0.20 strength (pre-computed)
-        arr = np.array(scene, dtype=np.float32)
-        arr[..., :3] *= self._vignette[..., np.newaxis]
-        scene = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), 'RGBA')
+        # 10. Vignette -- pre-rendered RGBA overlay
+        scene.alpha_composite(self._vignette_img)
 
         return scene
 

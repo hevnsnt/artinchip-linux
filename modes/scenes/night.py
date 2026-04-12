@@ -12,7 +12,7 @@ import os
 import random
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 from scenes.base import BaseScene
 from scenes import engine
@@ -44,8 +44,8 @@ class NightScene(BaseScene):
         # --- moonlight ray parameters ---
         self._ray_count = 14
 
-        # --- stars (250 particles, pre-computed) ---
-        self._star_count = 250
+        # --- stars (120 particles, pre-computed) ---
+        self._star_count = 120
         self._star_x = np.zeros(self._star_count, dtype=np.float32)
         self._star_y = np.zeros(self._star_count, dtype=np.float32)
         self._star_size = np.zeros(self._star_count, dtype=np.float32)
@@ -154,13 +154,6 @@ class NightScene(BaseScene):
         glow_arr[glow_top:, :, 3] = glow_alpha[:, np.newaxis]
         self._horizon_glow = Image.fromarray(glow_arr, 'RGBA')
 
-        # --- pre-compute vignette ---
-        x_lin = np.linspace(-1, 1, w, dtype=np.float32)
-        y_lin = np.linspace(-1, 1, h, dtype=np.float32)
-        X, Y = np.meshgrid(x_lin, y_lin)
-        self._vignette = np.clip(
-            1.0 - 0.18 * (X ** 2 * 0.3 + Y ** 2 * 0.7), 0.5, 1.0)
-
     # ------------------------------------------------------------------
     # Pre-computed assets
     # ------------------------------------------------------------------
@@ -264,14 +257,8 @@ class NightScene(BaseScene):
         # 2. Horizon glow
         scene.alpha_composite(self._horizon_glow)
 
-        # 3. Moon glow (pre-computed, with subtle pulse)
-        pulse = 0.88 + 0.12 * math.sin(t * 0.3)
-        glow = self._moon_glow
-        if abs(pulse - 1.0) > 0.01:
-            garr = np.array(glow, dtype=np.float32)
-            garr[..., 3] = np.clip(garr[..., 3] * pulse, 0, 255)
-            glow = Image.fromarray(garr.astype(np.uint8), 'RGBA')
-        scene = engine.additive_composite(scene, glow)
+        # 3. Moon glow (pre-computed, composited directly -- pulse was ±12%, barely visible)
+        scene = engine.additive_composite(scene, self._moon_glow)
 
         # 4. Moonlight rays -- soft, cool radial rays
         ray_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
@@ -297,28 +284,23 @@ class NightScene(BaseScene):
                 r0 = inner_r + (outer_r - inner_r) * frac0
                 r1 = inner_r + (outer_r - inner_r) * frac1
 
-                half0 = math.tau / self._ray_count * (0.08 + 0.22 * frac0)
-                half1 = math.tau / self._ray_count * (0.08 + 0.22 * frac1)
+                mx = int(mcx + math.cos(angle) * r0)
+                my = int(mcy + math.sin(angle) * r0)
+                ex = int(mcx + math.cos(angle) * r1)
+                ey = int(mcy + math.sin(angle) * r1)
 
                 seg_alpha = int(base_alpha * (1.0 - frac1) ** 1.8)
                 if seg_alpha < 1:
                     continue
 
-                pts = [
-                    (mcx + math.cos(angle - half0) * r0,
-                     mcy + math.sin(angle - half0) * r0),
-                    (mcx + math.cos(angle + half0) * r0,
-                     mcy + math.sin(angle + half0) * r0),
-                    (mcx + math.cos(angle + half1) * r1,
-                     mcy + math.sin(angle + half1) * r1),
-                    (mcx + math.cos(angle - half1) * r1,
-                     mcy + math.sin(angle - half1) * r1),
-                ]
-                ray_draw.polygon(
-                    [(int(px), int(py)) for px, py in pts],
-                    fill=(180, 200, 240, seg_alpha))
+                # Multi-width soft ray: wide dim + medium + bright core
+                ray_draw.line([(mx, my), (ex, ey)],
+                              fill=(180, 200, 240, max(1, seg_alpha // 4)), width=7)
+                ray_draw.line([(mx, my), (ex, ey)],
+                              fill=(180, 200, 240, max(1, seg_alpha // 2)), width=3)
+                ray_draw.line([(mx, my), (ex, ey)],
+                              fill=(180, 200, 240, seg_alpha), width=1)
 
-        ray_layer = engine.bloom(ray_layer, radius=10, intensity=0.9, downsample=4)
         scene = engine.additive_composite(scene, ray_layer)
 
         # 5. Moon disc (on top of glow/rays for crisp detail)
@@ -423,20 +405,16 @@ class NightScene(BaseScene):
                     seg_a = int(brt * (f1 ** 1.5))
                     if seg_a < 2:
                         continue
-                    # Outer glow
+                    # Multi-width soft trail: wide dim + medium + bright core
                     shoot_draw.line(
                         [(int(x0), int(y0)), (int(x1), int(y1))],
-                        fill=(130, 170, 255, seg_a // 3), width=5)
-                    # Bright body
+                        fill=(130, 170, 255, max(1, seg_a // 4)), width=6)
                     shoot_draw.line(
                         [(int(x0), int(y0)), (int(x1), int(y1))],
-                        fill=(210, 225, 255, seg_a), width=2)
-                    # White-hot core near head
-                    if f1 > 0.6:
-                        shoot_draw.line(
-                            [(int(x0), int(y0)), (int(x1), int(y1))],
-                            fill=(255, 255, 255, min(255, int(seg_a * 1.4))),
-                            width=1)
+                        fill=(210, 225, 255, max(1, seg_a // 2)), width=3)
+                    shoot_draw.line(
+                        [(int(x0), int(y0)), (int(x1), int(y1))],
+                        fill=(255, 255, 255, seg_a), width=1)
 
                 # Bright head glow
                 ihx, ihy = int(hx), int(hy)
@@ -445,10 +423,7 @@ class NightScene(BaseScene):
                         5, (200, 220, 255), alpha_peak=int(brt * 0.9))
                     engine.stamp_glow(shoot_layer, ihx, ihy, head)
 
-            shoot_bloom = engine.bloom(
-                shoot_layer, radius=6, intensity=1.0, downsample=4)
-            scene = engine.additive_composite(scene, shoot_bloom)
-            scene.alpha_composite(shoot_layer)
+            scene = engine.additive_composite(scene, shoot_layer)
 
         # 8. Dark wispy clouds drifting slowly
         for cloud in self._clouds:
@@ -482,21 +457,8 @@ class NightScene(BaseScene):
             if pulse > 0.3:
                 engine.stamp_glow(scene, int(ff['x']), int(ff['y']), ff['sprite'])
 
-        # 9. Color grading: cool blue tint, low contrast, vignette
-        arr = np.array(scene, dtype=np.float32)
-
-        # Cool blue tint
-        tint = np.array([20, 25, 45], dtype=np.float32)
-        strength = 0.12
-        arr[..., :3] = arr[..., :3] * (1 - strength) + tint * strength * (arr[..., :3] / 255.0)
-
-        # Slight contrast reduction for dreamy feel
-        arr[..., :3] = (arr[..., :3] - 127.5) * 0.95 + 127.5
-
-        # Vignette
-        arr[..., :3] *= self._vignette[..., np.newaxis]
-
-        scene = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), 'RGBA')
+        # 9. Color grading: cool blue tint, low contrast, vignette (engine PIL-native)
+        scene = engine.color_grade(scene, 'night')
 
         return scene
 

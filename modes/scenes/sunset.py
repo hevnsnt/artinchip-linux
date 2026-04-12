@@ -93,13 +93,6 @@ class SunsetScene(BaseScene):
         # --- atmospheric haze near horizon ---
         self._haze = self._build_haze(w, h)
 
-        # --- pre-compute vignette (0.15 strength) ---
-        x_lin = np.linspace(-1, 1, w, dtype=np.float32)
-        y_lin = np.linspace(-1, 1, h, dtype=np.float32)
-        X, Y = np.meshgrid(x_lin, y_lin)
-        self._vignette = np.clip(
-            1.0 - 0.15 * (X ** 2 * 0.3 + Y ** 2 * 0.7), 0.5, 1.0)
-
         # --- ember/dust particles rising from horizon ---
         self._embers = []
         for _ in range(10):
@@ -395,10 +388,6 @@ class SunsetScene(BaseScene):
                 r0 = inner_r + (outer_r - inner_r) * frac0
                 r1 = inner_r + (outer_r - inner_r) * frac1
 
-                # Wide rays that flare outward
-                half0 = 0.06 + 0.10 * frac0
-                half1 = 0.06 + 0.10 * frac1
-
                 # Power-curve fadeout
                 seg_alpha = int(base_alpha * (1.0 - frac1) ** 1.3)
                 if seg_alpha < 1:
@@ -408,21 +397,18 @@ class SunsetScene(BaseScene):
                 ray_g = int(180 - 40 * frac1)
                 ray_b = int(60 - 30 * frac1)
 
-                pts = [
-                    (scx + math.cos(angle - half0) * r0,
-                     scy + math.sin(angle - half0) * r0),
-                    (scx + math.cos(angle + half0) * r0,
-                     scy + math.sin(angle + half0) * r0),
-                    (scx + math.cos(angle + half1) * r1,
-                     scy + math.sin(angle + half1) * r1),
-                    (scx + math.cos(angle - half1) * r1,
-                     scy + math.sin(angle - half1) * r1),
-                ]
-                ray_draw.polygon(
-                    [(int(px), int(py)) for px, py in pts],
-                    fill=(255, ray_g, ray_b, seg_alpha))
+                mx = int(scx + math.cos(angle) * r0)
+                my = int(scy + math.sin(angle) * r0)
+                ex = int(scx + math.cos(angle) * r1)
+                ey = int(scy + math.sin(angle) * r1)
 
-        ray_layer = engine.bloom(ray_layer, radius=12, intensity=1.0, downsample=4)
+                # Multi-width soft ray: wide dim + medium + bright core
+                ray_draw.line([(mx, my), (ex, ey)],
+                              fill=(255, ray_g, ray_b, max(1, seg_alpha // 4)), width=9)
+                ray_draw.line([(mx, my), (ex, ey)],
+                              fill=(255, ray_g, ray_b, max(1, seg_alpha // 2)), width=4)
+                ray_draw.line([(mx, my), (ex, ey)],
+                              fill=(255, ray_g, ray_b, seg_alpha), width=1)
         # Merge rays into the combined light layer
         light_layer.alpha_composite(ray_layer)
 
@@ -472,24 +458,8 @@ class SunsetScene(BaseScene):
         # 7c. Dark silhouette ground strip
         scene.alpha_composite(self._ground_sil, dest=(0, h - 40))
 
-        # 8. Color grading: warm orange-gold tint + contrast + vignette
-        #    Combined into minimal array operations for performance
-        arr = np.array(scene, dtype=np.float32)
-        rgb = arr[..., :3]
-
-        # Tint (strength 0.15, tint [60, 30, 10]) + contrast (1.1) + vignette
-        # Combined: result = ((rgb * 0.85 + [60,30,10] * 0.15 * rgb/255) - 127.5) * 1.1 + 127.5
-        #         = ((rgb * (0.85 + [0.03529, 0.01765, 0.00588])) - 127.5) * 1.1 + 127.5
-        tint_factors = np.array([0.85 + 60*0.15/255.0, 0.85 + 30*0.15/255.0, 0.85 + 10*0.15/255.0],
-                                dtype=np.float32)
-        rgb *= tint_factors
-        rgb -= 127.5
-        rgb *= 1.1
-        rgb += 127.5
-        rgb *= self._vignette[..., np.newaxis]
-        arr[..., :3] = rgb
-
-        scene = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), 'RGBA')
+        # 8. Color grading: warm orange-gold tint + contrast + vignette (engine PIL-native)
+        scene = engine.color_grade(scene, 'sunset')
 
         return scene
 

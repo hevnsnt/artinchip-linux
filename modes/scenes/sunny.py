@@ -110,6 +110,48 @@ class SunnyScene(BaseScene):
         sun_arr[self._sun_mask, 3] = alpha.astype(np.uint8)
         self._sun_sprite = Image.fromarray(sun_arr, 'RGBA')
 
+        # --- pre-render sun bloom (static -- sun doesn't move) ---
+        self._sun_bloom = engine.multi_bloom(
+            self._sun_sprite,
+            passes=[(12, 1.2), (35, 0.7), (90, 0.35)],
+        )
+
+        # --- pre-render grass strip (static blades at t=0, shifted at render) ---
+        grass_h = 40
+        self._grass_h = grass_h
+        self._grass_layer = Image.new('RGBA', (w + 20, grass_h), (0, 0, 0, 0))
+        grass_draw = ImageDraw.Draw(self._grass_layer)
+        ground_y_local = grass_h - 10
+        # Bright green ground
+        grass_draw.rectangle([0, ground_y_local, w + 20, grass_h], fill=(30, 120, 35, 255))
+        # Lighter highlight strip on top edge
+        grass_draw.rectangle([0, ground_y_local, w + 20, ground_y_local + 2], fill=(50, 160, 55, 180))
+        for blade in self._grass:
+            bx = blade['x'] + 10  # offset for sway margin
+            bh = blade['height']
+            shade = blade['shade']
+            crv = blade['curve']
+
+            base_x = bx
+            base_y = ground_y_local
+            tip_x = bx + crv * bh  # sway=0 at t=0
+            tip_y = ground_y_local - bh
+            mid_x = bx + crv * bh * 0.5
+            mid_y = ground_y_local - bh * 0.5
+
+            r = int(35 * shade)
+            g = int(190 * shade)
+            b = int(55 * shade)
+            col = (r, g, b, 230)
+
+            grass_draw.line(
+                [(int(base_x), int(base_y)), (int(mid_x), int(mid_y))],
+                fill=col, width=2)
+            tip_col = (min(255, r + 30), min(255, g + 30), min(255, b + 15), 200)
+            grass_draw.line(
+                [(int(mid_x), int(mid_y)), (int(tip_x), int(tip_y))],
+                fill=tip_col, width=1)
+
         # --- pre-render anamorphic streak sprite (static horizontal glow) ---
         streak_arr = np.zeros((h, w, 4), dtype=np.uint8)
         x_coords = np.arange(w, dtype=np.float32)
@@ -174,12 +216,8 @@ class SunnyScene(BaseScene):
         sun_layer = self._sun_sprite
         scene.alpha_composite(sun_layer)
 
-        # 3. Sun bloom -- multi-pass bloom on just the sun core
-        bloom_layer = engine.multi_bloom(
-            sun_layer,
-            passes=[(12, 1.2), (35, 0.7), (90, 0.35)],
-        )
-        scene = engine.additive_composite(scene, bloom_layer)
+        # 3. Sun bloom -- pre-rendered (sun is static)
+        scene = engine.additive_composite(scene, self._sun_bloom)
 
         # 4. God rays -- 16 rays, each drawn as 5 fading segments
         ray_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
@@ -203,30 +241,32 @@ class SunnyScene(BaseScene):
                 r0 = inner_r + (outer_r - inner_r) * frac0
                 r1 = inner_r + (outer_r - inner_r) * frac1
 
-                # Widening half-angle per segment
-                half0 = math.tau / 16 * (0.10 + 0.28 * frac0)
-                half1 = math.tau / 16 * (0.10 + 0.28 * frac1)
-
                 # Power-curve fadeout
                 seg_alpha = int(base_alpha * (1.0 - frac1) ** 1.5)
                 if seg_alpha < 1:
                     continue
 
-                pts = [
-                    (scx + math.cos(angle - half0) * r0,
-                     scy + math.sin(angle - half0) * r0),
-                    (scx + math.cos(angle + half0) * r0,
-                     scy + math.sin(angle + half0) * r0),
-                    (scx + math.cos(angle + half1) * r1,
-                     scy + math.sin(angle + half1) * r1),
-                    (scx + math.cos(angle - half1) * r1,
-                     scy + math.sin(angle - half1) * r1),
-                ]
-                ray_draw.polygon(
-                    [(int(px), int(py)) for px, py in pts],
-                    fill=(255, 225, 150, seg_alpha))
+                # Segment midline from r0 to r1
+                start = (int(scx + math.cos(angle) * r0),
+                         int(scy + math.sin(angle) * r0))
+                end = (int(scx + math.cos(angle) * r1),
+                       int(scy + math.sin(angle) * r1))
 
-        ray_layer = engine.bloom(ray_layer, radius=8, intensity=1.0, downsample=4)
+                # Approximate segment width from half-angle spread
+                seg_mid_r = (r0 + r1) * 0.5
+                half_mid = math.tau / 16 * (0.10 + 0.28 * (frac0 + frac1) * 0.5)
+                seg_w = max(1, int(2 * seg_mid_r * math.sin(half_mid)))
+
+                # Multi-width drawing for soft edges (no bloom needed)
+                ray_draw.line([start, end],
+                              fill=(255, 225, 150, seg_alpha // 4),
+                              width=seg_w + 10)
+                ray_draw.line([start, end],
+                              fill=(255, 225, 150, seg_alpha // 2),
+                              width=seg_w + 5)
+                ray_draw.line([start, end],
+                              fill=(255, 225, 150, seg_alpha),
+                              width=seg_w)
         scene = engine.additive_composite(scene, ray_layer)
 
         # 5. Anamorphic streak -- pre-rendered sprite composited directly
@@ -260,45 +300,9 @@ class SunnyScene(BaseScene):
         # 7. Warm horizon glow (pre-computed static layer)
         scene.alpha_composite(self._horizon_glow)
 
-        # 8. Grass -- vibrant green ground strip + swaying blades
-        grass_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        grass_draw = ImageDraw.Draw(grass_layer)
-        ground_y = h - 10
-        # Bright green ground
-        grass_draw.rectangle([0, ground_y, w, h], fill=(30, 120, 35, 255))
-        # Lighter highlight strip on top edge
-        grass_draw.rectangle([0, ground_y, w, ground_y + 2], fill=(50, 160, 55, 180))
-
-        for blade in self._grass:
-            bx = blade['x']
-            sway = math.sin(t * 2 + blade['phase']) * 5
-            bh = blade['height']
-            shade = blade['shade']
-            crv = blade['curve']
-
-            base_x = bx
-            base_y = ground_y
-            tip_x = bx + sway + crv * bh
-            tip_y = ground_y - bh
-            mid_x = bx + sway * 0.5 + crv * bh * 0.5
-            mid_y = ground_y - bh * 0.5
-
-            # Vibrant greens with golden-green highlights
-            r = int(35 * shade)
-            g = int(190 * shade)
-            b = int(55 * shade)
-            col = (r, g, b, 230)
-
-            grass_draw.line(
-                [(int(base_x), int(base_y)), (int(mid_x), int(mid_y))],
-                fill=col, width=2)
-            # Lighter tip catching sunlight
-            tip_col = (min(255, r + 30), min(255, g + 30), min(255, b + 15), 200)
-            grass_draw.line(
-                [(int(mid_x), int(mid_y)), (int(tip_x), int(tip_y))],
-                fill=tip_col, width=1)
-
-        scene.alpha_composite(grass_layer)
+        # 8. Grass -- pre-rendered strip with slight sway shift
+        sway = int(math.sin(t * 0.5) * 3)
+        scene.alpha_composite(self._grass_layer, dest=(sway - 10, h - self._grass_h))
 
         # 9. Pollen / dust -- tiny warm dots drifting with sine wobble
         pollen_layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
