@@ -31,6 +31,8 @@ import socket
 import tempfile
 from urllib.parse import urlparse
 
+IS_MAC = sys.platform == 'darwin'
+
 PIDFILE = '/tmp/tinyscreen.pid'
 LOGFILE = '/tmp/tinyscreen.log'
 STATEFILE = '/tmp/tinyscreen.state'
@@ -105,7 +107,39 @@ def rsa_public_decrypt(pub_key, ct):
     return m_bytes[idx + 1:]
 
 # ── USB + Auth ──────────────────────────────────────────────────────
+_usb_backend = None
+
+def _get_usb_backend():
+    """Resolve a libusb backend for pyusb.
+
+    On macOS, Homebrew installs libusb outside the default dyld search
+    path (/opt/homebrew/lib on Apple Silicon, /usr/local/lib on Intel),
+    so ctypes.util.find_library often misses it. Load it explicitly.
+    """
+    global _usb_backend
+    if _usb_backend is not None:
+        return _usb_backend or None
+    if IS_MAC:
+        try:
+            import usb.backend.libusb1 as libusb1
+            for path in ['/opt/homebrew/lib/libusb-1.0.dylib',
+                         '/usr/local/lib/libusb-1.0.dylib',
+                         '/opt/homebrew/lib/libusb-1.0.0.dylib',
+                         '/usr/local/lib/libusb-1.0.0.dylib']:
+                if os.path.isfile(path):
+                    be = libusb1.get_backend(find_library=lambda _p: path)
+                    if be:
+                        _usb_backend = be
+                        return be
+        except Exception:
+            pass
+    _usb_backend = None
+    return None
+
 def find_device():
+    backend = _get_usb_backend()
+    if backend:
+        return usb.core.find(idVendor=VID, idProduct=PID, backend=backend)
     return usb.core.find(idVendor=VID, idProduct=PID)
 
 def setup_device(dev):
@@ -256,7 +290,13 @@ _font_cache = {}
 def _load_font(size=36):
     if size in _font_cache:
         return _font_cache[size]
-    for path in ['/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    for path in ['/System/Library/Fonts/Menlo.ttc',
+                 '/System/Library/Fonts/Helvetica.ttc',
+                 '/System/Library/Fonts/HelveticaNeue.ttc',
+                 '/System/Library/Fonts/SFNS.ttf',
+                 '/Library/Fonts/Arial Unicode.ttf',
+                 '/Library/Fonts/Arial.ttf',
+                 '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
                  '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
                  '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf']:
         try:
@@ -365,6 +405,8 @@ def _find_other_pids():
 def _kill_tinyscreen_children():
     """Kill orphaned Xvfb, xvfb-run, headless chromium, and EVDI processes."""
     for pattern in ['xvfb-run.*tinyscreen', 'chromium.*remote-debugging-port=9222',
+                    'Google Chrome.*remote-debugging-port=9222',
+                    'Chromium.*remote-debugging-port=9222',
                     'Xvfb :98', 'Xvfb :99', 'Xvfb :10',
                     'tinyscreen-evdi', 'chromium.*tinyscreen-display']:
         subprocess.run(['pkill', '-9', '-f', pattern], capture_output=True)
@@ -433,7 +475,9 @@ def _send_blank_frame():
         pass
 
 def _evdi_available():
-    """Check if EVDI module is loaded or can be loaded."""
+    """Check if EVDI module is loaded or can be loaded. Linux-only."""
+    if IS_MAC:
+        return False
     try:
         result = subprocess.run(['lsmod'], capture_output=True, timeout=5)
         if b'evdi' in result.stdout:
@@ -673,14 +717,37 @@ def daemonize():
     sys.stdout = _log_fh
     sys.stderr = _log_fh
 
+# ── Browser detection ───────────────────────────────────────────────
+_MAC_BROWSERS = [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+    '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+    '/Applications/Arc.app/Contents/MacOS/Arc',
+]
+
+def _find_browser():
+    """Return path to an installed Chrome-family browser, or None."""
+    if IS_MAC:
+        for p in _MAC_BROWSERS:
+            if os.path.isfile(p) and os.access(p, os.X_OK):
+                return p
+        return None
+    for b in ['chromium', 'chromium-browser', 'google-chrome']:
+        if shutil.which(b):
+            return b
+    return None
+
 # ── yt-dlp ──────────────────────────────────────────────────────────
 def is_youtube_url(url):
     return any(x in url for x in ['youtube.com', 'youtu.be', 'youtube-nocookie.com'])
 
 def find_yt_dlp():
     for path in [shutil.which('yt-dlp'),
+                 '/opt/homebrew/bin/yt-dlp',
+                 '/usr/local/bin/yt-dlp',
                  os.path.expanduser('~/.local/bin/yt-dlp'),
-                 '/usr/local/bin/yt-dlp', '/usr/bin/yt-dlp']:
+                 '/usr/bin/yt-dlp']:
         if path and os.path.isfile(path) and os.access(path, os.X_OK):
             return path
     if _sudo_user:
@@ -818,13 +885,9 @@ def mode_url(disp, url, quality, fps):
 
     wait_for_url(disp, url, quality)
 
-    browser = None
-    for b in ['chromium', 'chromium-browser', 'google-chrome']:
-        if shutil.which(b):
-            browser = b
-            break
+    browser = _find_browser()
     if not browser:
-        log("ERROR: No browser found (chromium/google-chrome)")
+        log("ERROR: No browser found (Chrome/Chromium/Edge/Brave)")
         return
 
     w, h = disp.w, disp.h
@@ -832,15 +895,18 @@ def mode_url(disp, url, quality, fps):
 
     # Start persistent headless chromium with CDP (no X server needed)
     log(f"Starting {browser} headless + CDP on port {cdp_port} -> {url}")
-    chrome_proc = subprocess.Popen([
-        browser, '--headless=new', '--no-sandbox', '--disable-gpu',
+    chrome_args = [
+        browser, '--headless=new', '--disable-gpu',
         f'--remote-debugging-port={cdp_port}',
         '--remote-allow-origins=*',
         f'--window-size={w},{h}', '--hide-scrollbars',
         '--force-device-scale-factor=1',
         '--disable-background-timer-throttling',
         url
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    ]
+    if not IS_MAC:
+        chrome_args.insert(2, '--no-sandbox')
+    chrome_proc = subprocess.Popen(chrome_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     _child_procs.append(chrome_proc)
 
     # Wait for CDP to be ready
@@ -996,7 +1062,7 @@ def mode_image(disp, path, quality):
 # ── Mode: generic module runner ─────────────────────────────────────
 MODES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'modes')
 ALL_MODES = ['sysmon', 'ticker', 'clock', 'matrix', 'visualizer',
-             'nowplaying', 'docker', 'netmon', 'lanmap', 'pihole', 'speedtest', 'news', 'pomodoro']
+             'nowplaying', 'docker', 'netmon', 'lanmap', 'pihole', 'speedtest', 'news', 'pomodoro', 'todo']
 
 def _load_mode(name):
     """Import a mode module by name. Returns module or None."""
@@ -1016,6 +1082,7 @@ def _load_mode(name):
         'speedtest': 'speedtest_mode',
         'news': 'newscrawl',
         'pomodoro': 'pomodoro',
+        'todo': 'todo',
     }
     mod_name = module_map.get(name, name)
     try:
@@ -1066,6 +1133,7 @@ def _mode_fps(name):
         'pihole':     1/2,   # 2fps  — DNS stats
         'speedtest':  1/2,   # 2fps  — speed test display
         'pomodoro':   1,     # 1fps  — countdown seconds
+        'todo':       1/2,   # 2fps  — re-reads todo.json for live updates
     }.get(name, 1.0)
 
 def mode_single(disp, name, quality, extra_args=None):
@@ -1086,7 +1154,7 @@ def mode_single(disp, name, quality, extra_args=None):
             jpeg = image_to_jpeg(img, quality)
             if not disp.send(jpeg):
                 disp.wait_for_device()
-            time.sleep(interval)
+            time.sleep(getattr(mod, 'frame_interval', lambda: interval)())
     finally:
         _cleanup_mode(mod)
 
@@ -1226,6 +1294,7 @@ def main():
                         help='Group lanmap results by device type')
     group.add_argument('--news', action='store_true', help='RSS news crawl')
     group.add_argument('--pomodoro', action='store_true', help='Pomodoro focus timer')
+    group.add_argument('--todo', action='store_true', help='Todo list (today + next 3 days)')
     group.add_argument('--show', nargs='+', metavar='MODE',
                        help='Rotate through modes (use "all" for all, or list names)')
     group.add_argument('--monitor', action='store_true',
@@ -1345,6 +1414,14 @@ def main():
 
     # EVDI modes: --monitor and --url (when EVDI is available)
     # These bypass the normal Display class since the bridge handles USB directly.
+    if mode == 'monitor' and IS_MAC:
+        print("tinyscreen: --monitor (EVDI virtual display) is Linux-only.")
+        print("On macOS, drive the display with content modes instead:")
+        print("  tinyscreen --url https://...    dashboard in headless Chrome")
+        print("  tinyscreen --image photo.jpg")
+        print("  tinyscreen --video clip.mp4")
+        print("  tinyscreen --sysmon / --clock / --matrix / --ticker / ...")
+        return
     if mode == 'monitor' or (mode == 'url' and _evdi_available()):
         evdi_url = args.url if mode == 'url' else None
         if not args.fg:

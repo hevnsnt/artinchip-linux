@@ -5,9 +5,12 @@ with album art placeholder, title, artist, and progress bar.
 """
 
 import subprocess
+import sys as _sys
 import time
 import math
 from PIL import Image, ImageDraw, ImageFont
+
+IS_MAC = _sys.platform == 'darwin'
 
 # --- Visual style (dark theme) ---
 BG = (10, 12, 18)
@@ -25,7 +28,14 @@ PURPLE = (160, 100, 255)
 _fonts = {}
 def font(size):
     if size not in _fonts:
-        for path in ['/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
+        for path in [
+                     '/System/Library/Fonts/Menlo.ttc',
+                     '/System/Library/Fonts/Helvetica.ttc',
+                     '/System/Library/Fonts/HelveticaNeue.ttc',
+                     '/System/Library/Fonts/SFNS.ttf',
+                     '/Library/Fonts/Arial Unicode.ttf',
+                     '/Library/Fonts/Arial.ttf',
+                     '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
                      '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf']:
             try:
                 _fonts[size] = ImageFont.truetype(path, size)
@@ -197,6 +207,62 @@ def _get_media_dbus():
         return None
 
 
+def _get_media_macos_app(app):
+    """Get media info from one macOS app (Music or Spotify) via osascript."""
+    getter = (
+        f'tell application "{app}" to set t to name of current track\n'
+        f'tell application "{app}" to set a to artist of current track\n'
+        f'tell application "{app}" to set al to album of current track\n'
+        f'tell application "{app}" to set p to player position\n'
+        f'tell application "{app}" to set d to duration of current track\n'
+        f'tell application "{app}" to set s to player state as string\n'
+        'return t & "|" & a & "|" & al & "|" & p & "|" & d & "|" & s'
+    )
+    try:
+        result = subprocess.run(['osascript', '-e', getter],
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        parts = result.stdout.strip().split('|')
+        if len(parts) < 6:
+            parts += [''] * (6 - len(parts))
+        title, artist, album, position_s, length_s, status = parts[:6]
+        try:
+            position_s = float(position_s)
+        except (ValueError, TypeError):
+            position_s = 0
+        try:
+            length_s = float(length_s)
+        except (ValueError, TypeError):
+            length_s = 0
+        return {
+            'title': title or 'Unknown Title',
+            'artist': artist or 'Unknown Artist',
+            'album': album or '',
+            'art_url': '',
+            'status': status or 'Stopped',
+            'position': position_s,
+            'length': length_s,
+        }
+    except Exception:
+        return None
+
+
+def _get_media_macos():
+    """Get media info from Apple Music or Spotify (whichever is running)."""
+    for app in ['Music', 'Spotify']:
+        try:
+            r = subprocess.run(['pgrep', '-x', app], capture_output=True, timeout=3)
+            if r.returncode != 0:
+                continue
+        except Exception:
+            continue
+        info = _get_media_macos_app(app)
+        if info:
+            return info
+    return None
+
+
 def _get_media_info():
     """Get current media info with caching."""
     global _media_cache, _media_cache_time
@@ -205,10 +271,13 @@ def _get_media_info():
         return _media_cache
 
     info = None
-    if _check_playerctl():
-        info = _get_media_playerctl()
-    if info is None:
-        info = _get_media_dbus()
+    if IS_MAC:
+        info = _get_media_macos()
+    else:
+        if _check_playerctl():
+            info = _get_media_playerctl()
+        if info is None:
+            info = _get_media_dbus()
 
     _media_cache = info
     _media_cache_time = now
@@ -266,7 +335,9 @@ def _draw_nothing_playing(draw, w, h):
     draw.line([(line_margin, line_y), (w - line_margin, line_y)], fill=BORDER, width=1)
 
     # Hint text
-    if not _check_playerctl():
+    if IS_MAC:
+        hint = "Play music in Apple Music or Spotify"
+    elif not _check_playerctl():
         hint = "Install playerctl for media info"
         hf = font(16)
         hbbox = draw.textbbox((0, 0), hint, font=hf)

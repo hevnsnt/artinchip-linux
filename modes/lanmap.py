@@ -6,9 +6,12 @@ Shows IPv4 address, hostname, and vendor/device type.
 
 import re
 import subprocess
+import sys as _sys
 import threading
 import time
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
+
+IS_MAC = _sys.platform == 'darwin'
 
 # ── Colors (vivid, matches other modes) ────────────────────────────
 BG          = (5, 7, 12)
@@ -29,7 +32,14 @@ _fonts = {}
 
 def font(size):
     if size not in _fonts:
-        for path in ['/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
+        for path in [
+                     '/System/Library/Fonts/Menlo.ttc',
+                     '/System/Library/Fonts/Helvetica.ttc',
+                     '/System/Library/Fonts/HelveticaNeue.ttc',
+                     '/System/Library/Fonts/SFNS.ttf',
+                     '/Library/Fonts/Arial Unicode.ttf',
+                     '/Library/Fonts/Arial.ttf',
+                     '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
                      '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf']:
             try:
                 _fonts[size] = ImageFont.truetype(path, size)
@@ -280,6 +290,31 @@ _TYPE_ORDER = {
 
 def _detect_subnet():
     """Detect local subnet from default route."""
+    if IS_MAC:
+        # macOS: get gateway from route, derive /24
+        try:
+            out = subprocess.run(['route', '-n', 'get', 'default'],
+                                 capture_output=True, text=True, timeout=3)
+            for line in out.stdout.splitlines():
+                if 'gateway:' in line:
+                    gw = line.split(':')[1].strip()
+                    octets = gw.split('.')
+                    if len(octets) == 4:
+                        return f"{octets[0]}.{octets[1]}.{octets[2]}.0/24"
+        except Exception:
+            pass
+        # Fallback: local IP from ifconfig
+        try:
+            out = subprocess.run(['ipconfig', 'getifaddr', 'en0'],
+                                 capture_output=True, text=True, timeout=3)
+            ip = out.stdout.strip()
+            if ip:
+                octets = ip.split('.')
+                if len(octets) == 4:
+                    return f"{octets[0]}.{octets[1]}.{octets[2]}.0/24"
+        except Exception:
+            pass
+        return '192.168.1.0/24'
     try:
         out = subprocess.run(['ip', 'route'], capture_output=True, text=True, timeout=3)
         for line in out.stdout.splitlines():
@@ -381,6 +416,10 @@ def _gather_local_intel():
                     intel[ip] = {'hostname': '', 'services': [], 'model': ''}
     except Exception:
         pass
+
+    if IS_MAC:
+        # avahi-browse (mDNS) is Linux-only; ARP is the best we have on macOS
+        return intel
 
     # mDNS via avahi-browse — rich device info
     try:

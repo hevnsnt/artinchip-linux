@@ -6,9 +6,12 @@ a full-width equalizer with reflection effect.
 
 import struct
 import subprocess
+import sys as _sys
 import time
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+
+IS_MAC = _sys.platform == 'darwin'
 
 # --- Visual style (dark theme) ---
 BG = (10, 12, 18)
@@ -26,7 +29,14 @@ PURPLE = (160, 100, 255)
 _fonts = {}
 def font(size):
     if size not in _fonts:
-        for path in ['/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
+        for path in [
+                     '/System/Library/Fonts/Menlo.ttc',
+                     '/System/Library/Fonts/Helvetica.ttc',
+                     '/System/Library/Fonts/HelveticaNeue.ttc',
+                     '/System/Library/Fonts/SFNS.ttf',
+                     '/Library/Fonts/Arial Unicode.ttf',
+                     '/Library/Fonts/Arial.ttf',
+                     '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
                      '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf']:
             try:
                 _fonts[size] = ImageFont.truetype(path, size)
@@ -38,6 +48,8 @@ def font(size):
 
 # --- Audio capture state ---
 _parec_proc = None
+_mac_stream = None
+_mac_queue = None
 _sample_rate = 44100
 _chunk_samples = 2048
 _chunk_bytes = _chunk_samples * 2  # s16le = 2 bytes per sample
@@ -45,6 +57,41 @@ _monitor_device = 'alsa_output.pci-0000_00_1f.3.analog-stereo.monitor'
 
 # Smoothing state for bars
 _prev_magnitudes = None
+
+
+def _init_macos_audio():
+    """Try to capture system audio from BlackHole via sounddevice."""
+    global _mac_stream, _mac_queue
+    try:
+        import sounddevice as sd
+        import queue
+    except ImportError:
+        _mac_stream = None
+        return
+    try:
+        idx = None
+        for i, d in enumerate(sd.query_devices()):
+            if 'blackhole' in d['name'].lower():
+                idx = i
+                break
+        if idx is None:
+            _mac_stream = None
+            return
+        _mac_queue = queue.Queue()
+
+        def _cb(indata, frames, t, status):
+            try:
+                _mac_queue.put_nowait(indata[:, 0].copy())
+            except Exception:
+                pass
+
+        _mac_stream = sd.InputStream(device=idx, channels=1,
+                                     samplerate=_sample_rate,
+                                     blocksize=_chunk_samples,
+                                     dtype='float32', callback=_cb)
+        _mac_stream.start()
+    except Exception:
+        _mac_stream = None
 
 
 def _detect_monitor_source():
@@ -77,8 +124,11 @@ def _detect_monitor_source():
 
 
 def init():
-    """Start the parec subprocess to capture audio."""
+    """Start audio capture (parec on Linux, BlackHole on macOS)."""
     global _parec_proc
+    if IS_MAC:
+        _init_macos_audio()
+        return
     _detect_monitor_source()
     try:
         _parec_proc = subprocess.Popen(
@@ -99,8 +149,17 @@ def init():
 
 
 def cleanup():
-    """Stop the parec subprocess."""
-    global _parec_proc
+    """Stop audio capture."""
+    global _parec_proc, _mac_stream
+    if IS_MAC:
+        if _mac_stream is not None:
+            try:
+                _mac_stream.stop()
+                _mac_stream.close()
+            except Exception:
+                pass
+            _mac_stream = None
+        return
     if _parec_proc is not None:
         try:
             _parec_proc.terminate()
@@ -114,7 +173,16 @@ def cleanup():
 
 
 def _read_audio_chunk():
-    """Read one chunk of raw PCM samples from parec. Returns numpy array or None."""
+    """Read one chunk of raw PCM samples. Returns numpy array or None."""
+    if IS_MAC:
+        if _mac_stream is None or _mac_queue is None:
+            return None
+        try:
+            data = _mac_queue.get(timeout=0.5)
+            samples = (np.clip(data, -1.0, 1.0) * 32767).astype(np.int16).astype(np.float64)
+            return samples
+        except Exception:
+            return None
     if _parec_proc is None or _parec_proc.poll() is not None:
         return None
     try:
@@ -156,7 +224,10 @@ def render_frame(w=1920, h=440):
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
         draw.text(((w - tw) // 2, (h - th) // 2 - 30), msg, fill=TEXT_DIM, font=f)
 
-        sub = "Waiting for PulseAudio stream..."
+        if IS_MAC:
+            sub = "Install BlackHole + sounddevice for audio capture"
+        else:
+            sub = "Waiting for PulseAudio stream..."
         f2 = font(18)
         bbox2 = draw.textbbox((0, 0), sub, font=f2)
         tw2 = bbox2[2] - bbox2[0]

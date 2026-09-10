@@ -18,6 +18,12 @@ _font_regular: str | None = None
 _font_bold: str | None = None
 
 _FONT_PATHS = [
+    '/System/Library/Fonts/Menlo.ttc',
+    '/System/Library/Fonts/Helvetica.ttc',
+    '/System/Library/Fonts/HelveticaNeue.ttc',
+    '/System/Library/Fonts/SFNS.ttf',
+    '/Library/Fonts/Arial Unicode.ttf',
+    '/Library/Fonts/Arial.ttf',
     '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
     '/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf',
     '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',

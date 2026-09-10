@@ -1,0 +1,8 @@
+{
+  "tasks": [
+    {"title": "Pay estimated taxes", "due": "2026-09-10", "time": "09:00", "done": false, "tags": ["finance"]},
+    {"title": "Call Mike re Trifident", "due": "2026-09-10", "time": "14:30", "done": false},
+    {"title": "Ship noRecognition KS rewards", "due": "2026-09-11", "time": "10:00", "done": false, "tags": ["ks"]},
+    {"title": "Weekly budget reconciliation", "due": "2026-09-12", "done": false, "tags": ["finance"]}
+  ]
+}
