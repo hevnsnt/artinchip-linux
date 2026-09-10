@@ -247,35 +247,48 @@ def _tag_color(tags):
     return PURPLE
 
 
-# --- Firework celebration on task close -------------------------------
-# When a task that was open flips to done while the display is showing it,
-# play a full fireworks show (rockets rising, flash + shockwave detonations,
-# flickering trails, embers, grand finale) on top of the shared scenes
-# engine (glow sprites + multi-pass bloom + additive compositing), then
-# remove the closed task from todo.json.
+# --- Close animations -------------------------------------------------
+# Per-task close: the row scratches off left -> right into a cloud of smoke
+# (scratch line + rising smoke puffs in the quarter-res light buffer).
+# Multiple tasks closed at once scratch simultaneously. Once the scratch
+# finishes, the task is removed from todo.json and the rows below jump up
+# (crossfade reflow). The full fireworks show plays ONLY when everything
+# due today is completed ("DAY CLEARED"), not on individual task closes.
 import math
 import random
 
 import numpy as _np
 from scenes import engine as _engine
 
-_FW_DUR = 3.5
+_FW_DUR = 3.5          # fireworks show length
+_FW_SCRATCH_DUR = 1.4  # scratch-off show length (line 0.55s + smoke tail)
+_FW_SCRATCH = 0.55
+_FW_SETTLE = 0.28
 _FW = {
     'open_keys': None,
     'anim_start': None,
     'dur': _FW_DUR,
-    'rockets': [],   # {t0, dur, x0, x1, y1, seed}
-    'bursts': [],    # {t0, x, y, col, parts:[...]}
-    'closed': [],
-    'prev': {},      # particle trail cache: (bi, pi) -> (x, y)
+    'show_type': None,   # 'scratch' | 'fireworks'
+    'segments': [],      # {x, y, w, h, t_delay, removed_key}
+    'fw_text': '',
+    't_last_fw_end': 0.0,
+    'prev': {},          # particle trail cache: (bi, pi) -> (x, y)
     'board_cache': None,   # (mtime, date, image) -- static board, reused
     'ghost': None,         # previous frame's light buffer (motion trails)
+    'smoke_ghost': None,   # previous frame's smoke light buffer
+    'smoke_start': None,   # monotonic time of the smoke trail timeline
+    'base': None,          # (mtime, image) board snapshot for the reflow blend
+    'pre_tasks': None,     # synthetic pre-close task list (scratch board)
+    'day_was_open': False, # due-today set was open before the last scratch
+    'removed_keys': set(),  # keys of the rows the show should remove
     'spr_arr': {},         # id(sprite) -> alpha-weighted float32 array
     'wash': None,
     'flash': None,
     'rhead': None,
     'rhalo': None,
     'bglow': None,
+    'scratch_line': None,
+    'smoke_spr': None,
 }
 _GOLD = (255, 210, 70)
 _GOLD_BRIGHT = (255, 235, 140)
@@ -439,7 +452,79 @@ def _splat_circle(buf, cx, cy, r, spr, bright, steps=40):
         _splat(buf, cx + math.cos(a) * r, cy + math.sin(a) * r,
                spr, bright)
 
-def _draw_celebration(img, t=None):
+def _draw_scratch(img, t=None):
+    """Scratch-off: each closed row erases left -> right under a bright line
+    with rising smoke (light buffer, same splat technique as the show).
+    The row is erased before the task leaves todo.json, so the rows below
+    jump up the moment the removal lands."""
+    if t is None:
+        if _FW['anim_start'] is None:
+            return img
+        t = time.monotonic() - _FW['anim_start']
+    W, H = img.size
+    board = img
+    sw, sh = W // 4, H // 4
+    buf = _np.zeros((sh, sw, 3), dtype=_np.float32)
+    ghost = _FW['ghost']
+    if ghost is not None and ghost.shape == (sh, sw, 3):
+        buf += ghost * 0.78        # smoke/motion trails
+    line_spr = _fw_sprite_arr(_FW['scratch_line'])
+    smoke_spr = _fw_sprite_arr(_FW['smoke_spr'])
+    d2 = ImageDraw.Draw(board)
+    lines = []                     # (line_x, cy) for rows still mid-scratch
+    for seg in _FW['segments']:
+        x, y, w, h = seg['x'], seg['y'], seg['w'], seg['h']
+        bt = max(0.0, t - seg.get('t_delay', 0.0))
+        f = bt / _FW_SCRATCH
+        f = max(0.0, min(1.0, f))
+        if f <= 0.0:
+            continue
+        # 1. erase: repaint the swept region with the panel gradient
+        line_x = int(x + w * f)
+        for yy in range(int(y), int(y + h)):
+            tt = (yy - 56) / max(1, (440 - 56 - 10) - 1)
+            c = _lerp_color((14, 18, 30), (8, 11, 20), tt)
+            d2.line([(x, yy), (line_x, yy)], fill=c)
+        cy = int(y + h / 2)
+        # 2. glow splat where the line is moving (line itself is drawn
+        #    AFTER the composite so the smoke can't wash it out)
+        if f < 1.0:
+            lines.append((line_x, cy))
+            _splat(buf, line_x / 4.0, cy / 4.0, line_spr, 1.1)
+            emit = min(1.0, bt / 0.1)
+        else:
+            # settled: puffs keep drifting from where the line ended
+            emit = max(0.0, 1.0 - (t - _FW_SCRATCH) / 0.5)
+            if emit <= 0.0:
+                continue
+            line_x = x + w
+        # 3. smoke: fresh puffs each frame along an up-and-out drift; the
+        #    ghost buffer smears them into a dissipating cloud
+        for k in range(7):
+            r1, r2, r3 = (random.random() for _ in range(3))
+            sx = line_x + (r1 - 0.4) * (18 + 40 * f) + 14 * f
+            sy = cy + (r2 - 0.5) * 26 - 8 - 46 * f - r3 * 30
+            bright = emit * (0.28 + 0.3 * r1) * (1.0 - 0.5 * f)
+            _splat(buf, sx / 4.0, sy / 4.0, smoke_spr, bright)
+    # upscale + one additive composite (identical path to the show)
+    light = _np.clip(buf, 0, 255).astype(_np.uint8)
+    light_img = Image.fromarray(light, 'RGB').resize((W, H),
+                                                     Image.Resampling.BILINEAR)
+    b3 = _np.asarray(board, dtype=_np.float32)
+    out = _np.clip(b3 + _np.asarray(light_img, dtype=_np.float32), 0, 255)
+    board = Image.fromarray(out.astype(_np.uint8), 'RGB')
+    _FW['ghost'] = buf
+    # 4. crisp scratch lines on top of the composite
+    if lines:
+        d3 = ImageDraw.Draw(board)
+        for line_x, cy in lines:
+            d3.line([(line_x - 1, cy - 17), (line_x - 1, cy + 17)],
+                    fill=(90, 230, 255), width=3)
+            d3.line([(line_x + 2, cy - 12), (line_x + 2, cy + 12)],
+                    fill=(230, 250, 255), width=1)
+    return board
+
+def _draw_fireworks(img, t=None):
     if t is None:
         if _FW['anim_start'] is None:
             return img
@@ -564,12 +649,12 @@ def _draw_celebration(img, t=None):
         board = Image.fromarray(out.astype(_np.uint8), 'RGB')
     _FW['ghost'] = buf
 
-    # 8. TASK COMPLETE text (full-res, crisp, ~1ms)
+    # 8. banner text (full-res, crisp, ~1ms)
     if _banner:
         pop = min(1.0, t / 0.16)
         size = int(54 * (0.6 + 0.4 * pop))
         f = font(size)
-        label = 'TASK COMPLETE'
+        label = _FW.get('fw_text') or 'TASK COMPLETE'
         d2 = ImageDraw.Draw(board)
         tw = d2.textlength(label, font=f)
         bx = (W - tw) // 2
@@ -579,16 +664,23 @@ def _draw_celebration(img, t=None):
 
     return board
 
+def _draw_celebration(img, t=None):
+    """Dispatch on the active show type."""
+    if _FW['show_type'] == 'scratch':
+        return _draw_scratch(img, t)
+    return _draw_fireworks(img, t)
+
 def _remove_closed():
-    """Delete the celebrated tasks from todo.json (atomic write)."""
-    if not _FW['closed']:
+    """Delete the closed tasks from todo.json (atomic write)."""
+    keys = _FW.get('removed_keys') or set()
+    if not keys:
         return
     try:
         with open(TODOFILE) as f:
             data = json.load(f)
         tasks = data.get('tasks', [])
         kept = [t for t in tasks
-                if not (t.get('done') and _task_key(t) in _FW['closed'])]
+                if not (t.get('done') and _task_key(t) in keys)]
         if len(kept) == len(tasks):
             return
         data['tasks'] = kept
@@ -603,21 +695,90 @@ def _remove_closed():
         _cache['mtime'] = None
     except Exception:
         pass
+    _FW['removed_keys'] = set()
+    _FW['base'] = None
 
-def _fw_detect(tasks, w, h):
-    """Detect open->done transitions and run the show state machine.
-    Returns True while a celebration is playing (callers then composite the
-    fireworks over a cached board instead of redrawing it)."""
+def _today_open_count(tasks):
+    """Count open tasks due today or overdue (the 'due today' set)."""
+    today = date.today()
+    n = 0
+    for t in tasks:
+        if t.get('done'):
+            continue
+        d = _parse_date(t.get('due'))
+        if d <= today:
+            n += 1
+    return n
+
+def _pre_close_list(tasks, keys):
+    """Copy of the task list with the given just-closed rows flipped back
+    to open -- the board to draw while they are being scratched off."""
+    pre = []
+    for t in tasks:
+        tt = dict(t)
+        if tt.get('done') and _task_key(tt) in keys:
+            tt['done'] = False
+        pre.append(tt)
+    return pre
+
+def _start_scratch(tasks, closed, closed_keys, w, h):
+    """Begin a scratch-off show for the closed rows. The board is drawn
+    from the pre-close list so the rows stay in place while they are
+    erased; the file write + row jump-up happen when the show ends."""
     now = time.monotonic()
+    n = _today_open_count(tasks)
+    _FW['show_type'] = 'scratch'
+    _FW['dur'] = _FW_SCRATCH_DUR
+    _FW['anim_start'] = now
+    _FW['fw_text'] = ''
+    _FW['day_was_open'] = (n + len(closed)) > 0
+    _FW['pre_tasks'] = _pre_close_list(tasks, closed_keys)
+    _FW['segments'] = _scratch_segs(_FW['pre_tasks'], closed_keys)
+    _FW['board_cache'] = None
+    _FW['ghost'] = None
+    _FW['smoke_ghost'] = None
+    _FW['smoke_start'] = now
+    _FW['base'] = None
+    return True
+
+def _detect(tasks, w, h):
+    """Detect open->done transitions and pick the celebration to play:
+    'scratch' for one-or-more task closes (all at once), 'fireworks'
+    only when the last task due today is completed (DAY CLEARED).
+    Returns True while a celebration is playing."""
+    now = time.monotonic()
+    today_d = date.today()
     if _FW['anim_start'] is not None and now - _FW['anim_start'] >= _FW['dur']:
-        _remove_closed()
+        if _FW['show_type'] == 'scratch':
+            _remove_closed()
+        day_was_open = _FW['day_was_open']
         _FW['anim_start'] = None
+        _FW['show_type'] = None
+        _FW['segments'] = []
+        _FW['fw_text'] = ''
         _FW['rockets'] = []
         _FW['bursts'] = []
-        _FW['closed'] = set()
         _FW['prev'] = {}
         _FW['board_cache'] = None
         _FW['ghost'] = None
+        _FW['smoke_ghost'] = None
+        _FW['smoke_start'] = None
+        _FW['base'] = None
+        _FW['pre_tasks'] = None
+        _FW['removed_keys'] = set()
+        # Day cleared: the scratch removal just landed and nothing due
+        # today is left open -> the fireworks are the reward for the
+        # whole day, not for this single task close.
+        tasks2 = _load_tasks() or []
+        if (day_was_open and _today_open_count(tasks2) == 0
+                and now - _FW['t_last_fw_end'] > 6.0):
+            _FW['show_type'] = 'fireworks'
+            _FW['dur'] = _FW_DUR
+            _FW['anim_start'] = now
+            _FW['fw_text'] = 'DAY CLEARED'
+            _FW['t_last_fw_end'] = now
+            _build_show(w, h)
+            return True
         return False
     if _FW['wash'] is None:
         _FW['wash'] = _glow(300, _GOLD, 235)
@@ -625,29 +786,67 @@ def _fw_detect(tasks, w, h):
         _FW['rhead'] = _glow(5, (255, 250, 235), 255)
         _FW['rhalo'] = _glow(13, (255, 200, 90), 140)
         _FW['bglow'] = _glow(150, _GOLD, 170)
+        _FW['scratch_line'] = _glow(6, (255, 255, 250), 255)
+        _FW['smoke_spr'] = _glow(22, (190, 195, 205), 60)
+    now_open = set()
+    for t in tasks:
+        if not t.get('done'):
+            now_open.add(_task_key(t))
     if _FW['anim_start'] is None:
-        now_open = set()
-        for t in tasks:
-            if not t.get('done'):
-                now_open.add(_task_key(t))
-        newly_closed = set()
+        closed = []
         if _FW['open_keys'] is not None:
             for t in tasks:
-                if t.get('done') and _task_key(t) in _FW['open_keys']:
-                    newly_closed.add(_task_key(t))
+                if (t.get('done') and _task_key(t) in _FW['open_keys']
+                        and _parse_date(t.get('due')) <= today_d):
+                    closed.append(t)
         _FW['open_keys'] = now_open
-        if newly_closed:
-            _FW['closed'] = newly_closed
-            _FW['anim_start'] = now
-            _build_show(w, h)
-            return True
+        if closed:
+            _FW['removed_keys'] = set(_task_key(t) for t in closed)
+            return _start_scratch(tasks, closed, _FW['removed_keys'], w, h)
         return False
+    if _FW['show_type'] == 'scratch':
+        # another close landed mid-show -> merge it into the running
+        # scratch (all rows scratch simultaneously, left-to-right)
+        closed = []
+        if _FW['open_keys'] is not None:
+            for t in tasks:
+                if (t.get('done') and _task_key(t) in _FW['open_keys']
+                        and _parse_date(t.get('due')) <= today_d):
+                    closed.append(t)
+        _FW['open_keys'] = now_open
+        if closed:
+            new_keys = set(_task_key(t) for t in closed)
+            _FW['removed_keys'] |= new_keys
+            _FW['day_was_open'] = True
+            return _start_scratch(tasks, closed, _FW['removed_keys'], w, h)
     return True
+
+def _scratch_segs(tasks, closed_keys):
+    """Screen-row positions of the rows about to be scratched. The row
+    index in the (pre-close) due-today order is the actual on-screen
+    position; every row scratches at the same time (t_delay 0)."""
+    today = date.today()
+    overdue, today_pending, _, _ = _split_tasks(tasks, today)
+    rows = list(overdue) + list(today_pending)
+    pad = 16
+    body_y = 56
+    row_h = 50
+    x0 = pad + 20
+    row_w = 1120 - 44
+    segs = []
+    for i, t in enumerate(rows):
+        if _task_key(t) not in closed_keys:
+            continue
+        segs.append({
+            'x': x0, 'y': body_y + 48 + i * row_h - 3,
+            'w': row_w, 'h': row_h, 't_delay': 0.0,
+        })
+    return segs
 
 def render_frame(w=1920, h=440):
     """Render the todo dashboard: big TODAY list + one consolidated upcoming card."""
     tasks = _load_tasks()
-    show = _fw_detect(tasks, w, h) if tasks is not None else False
+    show = _detect(tasks, w, h) if tasks is not None else False
 
     # While a show plays the board is static (the file only changes at the
     # close moment) -> draw it once and reuse the cached copy every frame.
@@ -683,7 +882,14 @@ def render_frame(w=1920, h=440):
                   fill=TEXT_DIM, font=font(18))
         return img
 
-    overdue, today_pending, today_done, upcoming = _split_tasks(tasks, today)
+    # While a scratch-off show plays the board is drawn from the pre-close
+    # list: the closed rows stay in their live positions (still 'open')
+    # until the scratch finishes, then the removal lands and the rows
+    # below jump up on the next frame.
+    board_tasks = tasks
+    if _FW['show_type'] == 'scratch' and _FW['pre_tasks'] is not None:
+        board_tasks = _FW['pre_tasks']
+    overdue, today_pending, today_done, upcoming = _split_tasks(board_tasks, today)
 
     pad = 16
     body_y = 56
