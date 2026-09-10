@@ -4,9 +4,16 @@ import os
 import struct
 import socket
 import subprocess
+import sys as _sys
 import time
 from collections import Counter
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
+
+IS_MAC = _sys.platform == 'darwin'
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 # --- Color palette (vivid, saturated — matching sysmon dashboard) ---
 BG          = (5, 7, 12)
@@ -26,7 +33,14 @@ PURPLE      = (160, 110, 255)
 _fonts = {}
 def font(size):
     if size not in _fonts:
-        for path in ['/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
+        for path in [
+                     '/System/Library/Fonts/Menlo.ttc',
+                     '/System/Library/Fonts/Helvetica.ttc',
+                     '/System/Library/Fonts/HelveticaNeue.ttc',
+                     '/System/Library/Fonts/SFNS.ttf',
+                     '/Library/Fonts/Arial Unicode.ttf',
+                     '/Library/Fonts/Arial.ttf',
+                     '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
                      '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf']:
             try:
                 _fonts[size] = ImageFont.truetype(path, size)
@@ -221,6 +235,8 @@ def _read_proc_tcp(path, parser):
 
 def _fetch_ss_process_map():
     """Run ss -tunp to get process names for connections."""
+    if IS_MAC:
+        return
     now = time.time()
     if now - _cache['last_ss_fetch'] < SS_REFRESH:
         return
@@ -261,11 +277,52 @@ def _fetch_ss_process_map():
 
 
 def _fetch_connections():
-    """Fetch all connections from /proc/net/tcp and tcp6."""
+    """Fetch all connections from /proc/net/tcp and tcp6 (or psutil on macOS)."""
     now = time.time()
     if now - _cache['last_proc_fetch'] < PROC_REFRESH:
         return
     _cache['last_proc_fetch'] = now
+
+    if IS_MAC and psutil is not None:
+        connections = []
+        try:
+            for c in psutil.net_connections(kind='inet'):
+                if not c.laddr or not c.raddr:
+                    continue
+                local_ip = c.laddr.ip
+                local_port = c.laddr.port
+                remote_ip = c.raddr.ip
+                remote_port = c.raddr.port
+                state = c.status or 'UNKNOWN'
+                if local_ip in ('127.0.0.1', '::1', '0.0.0.0') and \
+                   remote_ip in ('127.0.0.1', '::1', '0.0.0.0'):
+                    continue
+                if local_ip == '127.0.0.1' and state == 'LISTEN':
+                    continue
+                proc_name = ''
+                if c.pid:
+                    try:
+                        proc_name = psutil.Process(c.pid).name()[:35]
+                    except Exception:
+                        proc_name = ''
+                connections.append({
+                    'local_ip': local_ip,
+                    'local_port': local_port,
+                    'remote_ip': remote_ip,
+                    'remote_port': remote_port,
+                    'state': state,
+                    'process': proc_name,
+                })
+        except Exception:
+            pass
+        state_order = {
+            'ESTABLISHED': 0, 'LISTEN': 1, 'SYN_SENT': 2, 'SYN_RECV': 3,
+            'CLOSE_WAIT': 4, 'TIME_WAIT': 5, 'FIN_WAIT1': 6, 'FIN_WAIT2': 6,
+        }
+        connections.sort(key=lambda c: (state_order.get(c['state'], 9), c['local_port']))
+        _cache['connections'] = connections
+        _cache['error'] = None
+        return
 
     _fetch_ss_process_map()
 

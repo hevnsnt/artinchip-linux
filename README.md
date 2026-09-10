@@ -1,12 +1,12 @@
-# tinyscreen — Linux Display Engine for ArtInChip USB Bar Monitors
+# tinyscreen — Display Engine for ArtInChip USB Bar Monitors
 
-**Turn cheap ArtInChip (33c3:0e02) USB-C bar displays into dashboard screens, virtual monitors, or media players on Linux.** Built for the popular ZHAOCAILIN 11.3" 1920x440 stretched LCDs sold on AliExpress.
+**Turn cheap ArtInChip (33c3:0e02) USB-C bar displays into dashboard screens, virtual monitors, or media players on Linux and macOS.** Built for the popular ZHAOCAILIN 11.3" 1920x440 stretched LCDs sold on AliExpress.
 
-10+ built-in dashboards, EVDI virtual display support, low-CPU website rendering, and video playback. These monitors ship with Windows-only drivers and have **zero Linux support** — until now.
+10+ built-in dashboards, EVDI virtual display support (Linux), low-CPU website rendering, and video playback. These monitors ship with Windows-only drivers and have **zero Linux or macOS support** — until now.
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Python](https://img.shields.io/badge/python-3.10+-green)
-![Platform](https://img.shields.io/badge/platform-Linux-orange)
+![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-orange)
 
 ## Screenshots
 
@@ -60,6 +60,52 @@ sudo ./install.sh
 ```
 
 The installer handles dependencies, udev rules, and puts `tinyscreen` in your PATH. No sudo required after install.
+
+## macOS Install
+
+The core USB driver (RSA auth + JPEG frame streaming) is cross-platform. On macOS the Linux-specific pieces are swapped for native equivalents: EVDI/X11/systemd are replaced with headless Chrome CDP, psutil/sysctl system stats, and launchd for auto-start.
+
+```bash
+git clone -b macos https://github.com/hevnsnt/artinchip-linux.git
+cd artinchip-linux
+./install-macos.sh
+```
+
+Requires [Homebrew](https://brew.sh). The installer sets up `libusb`, `ffmpeg`, a Python venv, and symlinks `tinyscreen` into your PATH. Then:
+
+```bash
+tinyscreen --test     # verify the display works
+tinyscreen --sysmon   # system monitor dashboard
+tinyscreen --url https://example.com   # website in headless Chrome
+```
+
+### macOS mode support
+
+| Mode | macOS status |
+|------|--------------|
+| `--sysmon`, `--clock`, `--matrix`, `--ticker`, `--pomodoro`, `--news`, `--test`, `--image`, `--url`, `--video` | Fully working |
+| `--netmon` | Working (psutil) |
+| `--lanmap` | Working (requires `brew install nmap`; mDNS enrichment is Linux-only) |
+| `--docker` | Working if Docker Desktop is installed |
+| `--pihole`, `--speedtest` | Working (network-based) |
+| `--nowplaying` | Working via Apple Music / Spotify (grant Automation permission on first run) |
+| `--visualizer` | Needs `brew install --cask blackhole-2ch` + `pip install sounddevice` |
+| `--monitor` (EVDI virtual display) | **Linux-only** — no macOS equivalent; use the content modes above |
+
+### Auto-start on login (launchd)
+
+Edit `com.tinyscreen.plist` (set your username and desired mode/URL), then:
+
+```bash
+cp com.tinyscreen.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.tinyscreen.plist
+```
+
+### macOS notes
+
+- Plug the display in before running `tinyscreen`. If it isn't detected, unplug/replug the USB cable.
+- macOS may mount the display's dummy mass-storage interface (the Windows driver installer). Ignore it; `tinyscreen` talks to the vendor interface directly.
+- CPU temps in `--sysmon` need `osx-cpu-temp` (installed automatically); otherwise the panel shows N/A.
 
 ## Display Modes
 

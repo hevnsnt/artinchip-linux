@@ -30,7 +30,14 @@ _fonts = {}
 
 def font(size):
     if size not in _fonts:
-        for path in ['/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
+        for path in [
+                     '/System/Library/Fonts/Menlo.ttc',
+                     '/System/Library/Fonts/Helvetica.ttc',
+                     '/System/Library/Fonts/HelveticaNeue.ttc',
+                     '/System/Library/Fonts/SFNS.ttf',
+                     '/Library/Fonts/Arial Unicode.ttf',
+                     '/Library/Fonts/Arial.ttf',
+                     '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
                      '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
                      '/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf',
                      '/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf']:

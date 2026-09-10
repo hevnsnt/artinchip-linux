@@ -16,6 +16,12 @@ import time
 
 from PIL import Image, ImageDraw
 
+IS_MAC = sys.platform == 'darwin'
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
 # Ensure scenes package is importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -221,6 +227,17 @@ def _read_hostname() -> str:
     global _cached_hostname
     if _cached_hostname is not None:
         return _cached_hostname
+    if IS_MAC:
+        try:
+            out = subprocess.run(['scutil', '--get', 'ComputerName'],
+                                 capture_output=True, text=True, timeout=3)
+            if out.returncode == 0 and out.stdout.strip():
+                _cached_hostname = out.stdout.strip()
+                return _cached_hostname
+        except Exception:
+            pass
+        _cached_hostname = os.uname().nodename
+        return _cached_hostname
     try:
         with open('/etc/hostname') as f:
             _cached_hostname = f.read().strip()
@@ -230,21 +247,37 @@ def _read_hostname() -> str:
 
 
 def _read_uptime() -> str:
-    try:
-        with open('/proc/uptime') as f:
-            secs = float(f.read().split()[0])
-        days = int(secs // 86400)
-        hours = int((secs % 86400) // 3600)
-        mins = int((secs % 3600) // 60)
-        if days > 0:
-            return f"{days}d {hours}h {mins}m"
-        return f"{hours}h {mins}m"
-    except Exception:
-        return '?'
+    if IS_MAC:
+        try:
+            out = subprocess.run(['sysctl', '-n', 'kern.boottime'],
+                                 capture_output=True, text=True, timeout=3)
+            parts = out.stdout.split('sec = ')
+            secs = time.time() - int(parts[1].split(',')[0]) if len(parts) > 1 else 0
+        except Exception:
+            secs = 0
+    else:
+        try:
+            with open('/proc/uptime') as f:
+                secs = float(f.read().split()[0])
+        except Exception:
+            secs = 0
+    days = int(secs // 86400)
+    hours = int((secs % 86400) // 3600)
+    mins = int((secs % 3600) // 60)
+    if days > 0:
+        return f"{days}d {hours}h {mins}m"
+    return f"{hours}h {mins}m"
 
 
 def _read_cpu_pct() -> float:
     global _cpu_smooth
+    if IS_MAC and psutil is not None:
+        try:
+            raw = psutil.cpu_percent(interval=None)
+        except Exception:
+            return 0.0
+        _cpu_smooth = _cpu_smooth * 0.92 + raw * 0.08
+        return _cpu_smooth
     try:
         with open('/proc/stat') as f:
             line = f.readline()
@@ -266,6 +299,11 @@ def _read_cpu_pct() -> float:
 
 
 def _read_mem_pct() -> float:
+    if IS_MAC and psutil is not None:
+        try:
+            return psutil.virtual_memory().percent
+        except Exception:
+            return 0.0
     try:
         info = {}
         with open('/proc/meminfo') as f:
@@ -281,6 +319,12 @@ def _read_mem_pct() -> float:
 
 
 def _read_load() -> str:
+    if IS_MAC:
+        try:
+            l1, l5, l15 = os.getloadavg()
+            return f"{l1:.2f} {l5:.2f} {l15:.2f}"
+        except Exception:
+            return '?'
     try:
         with open('/proc/loadavg') as f:
             parts = f.read().split()
@@ -293,6 +337,20 @@ def _read_ip() -> str:
     global _cached_ip, _cached_ip_time
     now = time.monotonic()
     if now - _cached_ip_time < 30:
+        return _cached_ip
+    if IS_MAC:
+        for iface in ['en0', 'en1']:
+            try:
+                out = subprocess.run(['ipconfig', 'getifaddr', iface],
+                                     capture_output=True, text=True, timeout=2)
+                if out.returncode == 0 and out.stdout.strip():
+                    _cached_ip = out.stdout.strip()
+                    _cached_ip_time = now
+                    return _cached_ip
+            except Exception:
+                pass
+        _cached_ip = '--'
+        _cached_ip_time = now
         return _cached_ip
     try:
         out = subprocess.run(['hostname', '-I'], capture_output=True,
@@ -308,6 +366,17 @@ def _read_ip() -> str:
 def _read_kernel() -> str:
     global _cached_kernel
     if _cached_kernel is not None:
+        return _cached_kernel
+    if IS_MAC:
+        try:
+            out = subprocess.run(['sw_vers', '-productVersion'],
+                                 capture_output=True, text=True, timeout=3)
+            if out.returncode == 0 and out.stdout.strip():
+                _cached_kernel = 'macOS ' + out.stdout.strip()
+                return _cached_kernel
+        except Exception:
+            pass
+        _cached_kernel = 'macOS'
         return _cached_kernel
     try:
         with open('/proc/version') as f:

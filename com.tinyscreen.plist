@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tinyscreen</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- EDIT: replace YOUR_USER with your macOS username -->
+        <string>/Users/YOUR_USER/.tinyscreen/tinyscreen</string>
+        <!-- EDIT: pick one mode. Examples:
+             url http://YOUR-DASHBOARD-URL/  (website dashboard)
+             sysmon                          (system monitor)
+             clock                           (clock + weather)
+             image /path/to/image.jpg
+        -->
+        <string>--url</string>
+        <string>http://YOUR-DASHBOARD-URL/</string>
+        <string>--fg</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/tinyscreen.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/tinyscreen.log</string>
+</dict>
+</plist>

@@ -31,6 +31,8 @@ import socket
 import tempfile
 from urllib.parse import urlparse
 
+IS_MAC = sys.platform == 'darwin'
+
 PIDFILE = '/tmp/tinyscreen.pid'
 LOGFILE = '/tmp/tinyscreen.log'
 STATEFILE = '/tmp/tinyscreen.state'
@@ -256,7 +258,13 @@ _font_cache = {}
 def _load_font(size=36):
     if size in _font_cache:
         return _font_cache[size]
-    for path in ['/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    for path in ['/System/Library/Fonts/Menlo.ttc',
+                 '/System/Library/Fonts/Helvetica.ttc',
+                 '/System/Library/Fonts/HelveticaNeue.ttc',
+                 '/System/Library/Fonts/SFNS.ttf',
+                 '/Library/Fonts/Arial Unicode.ttf',
+                 '/Library/Fonts/Arial.ttf',
+                 '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
                  '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
                  '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf']:
         try:
@@ -365,6 +373,8 @@ def _find_other_pids():
 def _kill_tinyscreen_children():
     """Kill orphaned Xvfb, xvfb-run, headless chromium, and EVDI processes."""
     for pattern in ['xvfb-run.*tinyscreen', 'chromium.*remote-debugging-port=9222',
+                    'Google Chrome.*remote-debugging-port=9222',
+                    'Chromium.*remote-debugging-port=9222',
                     'Xvfb :98', 'Xvfb :99', 'Xvfb :10',
                     'tinyscreen-evdi', 'chromium.*tinyscreen-display']:
         subprocess.run(['pkill', '-9', '-f', pattern], capture_output=True)
@@ -433,7 +443,9 @@ def _send_blank_frame():
         pass
 
 def _evdi_available():
-    """Check if EVDI module is loaded or can be loaded."""
+    """Check if EVDI module is loaded or can be loaded. Linux-only."""
+    if IS_MAC:
+        return False
     try:
         result = subprocess.run(['lsmod'], capture_output=True, timeout=5)
         if b'evdi' in result.stdout:
@@ -673,14 +685,37 @@ def daemonize():
     sys.stdout = _log_fh
     sys.stderr = _log_fh
 
+# ── Browser detection ───────────────────────────────────────────────
+_MAC_BROWSERS = [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+    '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+    '/Applications/Arc.app/Contents/MacOS/Arc',
+]
+
+def _find_browser():
+    """Return path to an installed Chrome-family browser, or None."""
+    if IS_MAC:
+        for p in _MAC_BROWSERS:
+            if os.path.isfile(p) and os.access(p, os.X_OK):
+                return p
+        return None
+    for b in ['chromium', 'chromium-browser', 'google-chrome']:
+        if shutil.which(b):
+            return b
+    return None
+
 # ── yt-dlp ──────────────────────────────────────────────────────────
 def is_youtube_url(url):
     return any(x in url for x in ['youtube.com', 'youtu.be', 'youtube-nocookie.com'])
 
 def find_yt_dlp():
     for path in [shutil.which('yt-dlp'),
+                 '/opt/homebrew/bin/yt-dlp',
+                 '/usr/local/bin/yt-dlp',
                  os.path.expanduser('~/.local/bin/yt-dlp'),
-                 '/usr/local/bin/yt-dlp', '/usr/bin/yt-dlp']:
+                 '/usr/bin/yt-dlp']:
         if path and os.path.isfile(path) and os.access(path, os.X_OK):
             return path
     if _sudo_user:
@@ -818,13 +853,9 @@ def mode_url(disp, url, quality, fps):
 
     wait_for_url(disp, url, quality)
 
-    browser = None
-    for b in ['chromium', 'chromium-browser', 'google-chrome']:
-        if shutil.which(b):
-            browser = b
-            break
+    browser = _find_browser()
     if not browser:
-        log("ERROR: No browser found (chromium/google-chrome)")
+        log("ERROR: No browser found (Chrome/Chromium/Edge/Brave)")
         return
 
     w, h = disp.w, disp.h
@@ -832,15 +863,18 @@ def mode_url(disp, url, quality, fps):
 
     # Start persistent headless chromium with CDP (no X server needed)
     log(f"Starting {browser} headless + CDP on port {cdp_port} -> {url}")
-    chrome_proc = subprocess.Popen([
-        browser, '--headless=new', '--no-sandbox', '--disable-gpu',
+    chrome_args = [
+        browser, '--headless=new', '--disable-gpu',
         f'--remote-debugging-port={cdp_port}',
         '--remote-allow-origins=*',
         f'--window-size={w},{h}', '--hide-scrollbars',
         '--force-device-scale-factor=1',
         '--disable-background-timer-throttling',
         url
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    ]
+    if not IS_MAC:
+        chrome_args.insert(2, '--no-sandbox')
+    chrome_proc = subprocess.Popen(chrome_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     _child_procs.append(chrome_proc)
 
     # Wait for CDP to be ready
@@ -1345,6 +1379,14 @@ def main():
 
     # EVDI modes: --monitor and --url (when EVDI is available)
     # These bypass the normal Display class since the bridge handles USB directly.
+    if mode == 'monitor' and IS_MAC:
+        print("tinyscreen: --monitor (EVDI virtual display) is Linux-only.")
+        print("On macOS, drive the display with content modes instead:")
+        print("  tinyscreen --url https://...    dashboard in headless Chrome")
+        print("  tinyscreen --image photo.jpg")
+        print("  tinyscreen --video clip.mp4")
+        print("  tinyscreen --sysmon / --clock / --matrix / --ticker / ...")
+        return
     if mode == 'monitor' or (mode == 'url' and _evdi_available()):
         evdi_url = args.url if mode == 'url' else None
         if not args.fg:

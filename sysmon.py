@@ -14,7 +14,15 @@ import os
 import re
 import time
 import subprocess
+import sys as _sys
+import socket as _socket
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
+
+IS_MAC = _sys.platform == 'darwin'
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 # ── Colors (vivid, saturated for maximum impact) ──────────────────
 BG          = (5, 7, 12)
@@ -50,7 +58,14 @@ _fonts = {}
 
 def font(size):
     if size not in _fonts:
-        for path in ['/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
+        for path in [
+                     '/System/Library/Fonts/Menlo.ttc',
+                     '/System/Library/Fonts/Helvetica.ttc',
+                     '/System/Library/Fonts/HelveticaNeue.ttc',
+                     '/System/Library/Fonts/SFNS.ttf',
+                     '/Library/Fonts/Arial Unicode.ttf',
+                     '/Library/Fonts/Arial.ttf',
+                     '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
                      '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
                      '/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf',
                      '/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf']:
@@ -71,8 +86,18 @@ _net_rx_history = []  # last 60 samples of rx bytes/s
 _net_tx_history = []  # last 60 samples of tx bytes/s
 
 def read_cpu():
-    """Read per-core CPU usage from /proc/stat. Returns list of per-core percentages."""
+    """Read per-core CPU usage. Returns list of per-core percentages."""
     global _prev_cpu
+    if IS_MAC and psutil is not None:
+        try:
+            per = psutil.cpu_percent(interval=None, percpu=True)
+            total = psutil.cpu_percent(interval=None)
+            _cpu_history.append(total)
+            if len(_cpu_history) > 60:
+                _cpu_history.pop(0)
+            return per
+        except Exception:
+            return []
     with open('/proc/stat') as f:
         lines = [l for l in f if l.startswith('cpu')]
 
@@ -115,6 +140,12 @@ def read_cpu():
 
 def read_mem():
     """Returns (used_gb, total_gb, percent)."""
+    if IS_MAC and psutil is not None:
+        try:
+            vm = psutil.virtual_memory()
+            return vm.used / (1024**3), vm.total / (1024**3), vm.percent
+        except Exception:
+            return 0, 0, 0
     info = {}
     with open('/proc/meminfo') as f:
         for line in f:
@@ -127,6 +158,17 @@ def read_mem():
 
 def read_temps():
     """Returns dict of label -> temp_c."""
+    if IS_MAC:
+        temps = {}
+        # Best-effort: osx-cpu-temp (brew install osx-cpu-temp)
+        try:
+            out = subprocess.run(['osx-cpu-temp'], capture_output=True,
+                                 text=True, timeout=3)
+            if out.returncode == 0 and out.stdout.strip():
+                temps['Package id 0'] = float(out.stdout.strip())
+        except Exception:
+            pass
+        return temps
     temps = {}
     # coretemp (CPU)
     for hwmon in sorted(os.listdir('/sys/class/hwmon/')):
@@ -167,6 +209,21 @@ def read_temps():
 
 def read_gpu():
     """Returns dict with gpu temp, util, mem_used, mem_total, name. Or None."""
+    if IS_MAC:
+        try:
+            out = subprocess.run(['system_profiler', 'SPDisplaysDataType', '-json'],
+                                 capture_output=True, text=True, timeout=10)
+            if out.returncode == 0:
+                import json as _json
+                data = _json.loads(out.stdout)
+                gpus = data.get('SPDisplaysDataType', [])
+                if gpus:
+                    name = gpus[0].get('sppci_model', 'Apple GPU')
+                    return {'name': name, 'temp': None, 'util': None,
+                            'mem_used': None, 'mem_total': None}
+        except Exception:
+            pass
+        return None
     try:
         out = subprocess.run(
             ['nvidia-smi', '--query-gpu=temperature.gpu,utilization.gpu,memory.used,memory.total,name',
@@ -188,6 +245,31 @@ def read_gpu():
 def read_net():
     """Returns (rx_bytes_per_sec, tx_bytes_per_sec) for primary interface."""
     global _prev_net, _prev_time
+    if IS_MAC and psutil is not None:
+        try:
+            io = psutil.net_io_counters()
+            rx, tx = io.bytes_recv, io.bytes_sent
+        except Exception:
+            return 0, 0
+        now = time.monotonic()
+        if _prev_net is None:
+            _prev_net = (rx, tx)
+            _prev_time = now
+            return 0, 0
+        dt = now - _prev_time
+        if dt <= 0:
+            return 0, 0
+        rx_s = (rx - _prev_net[0]) / dt
+        tx_s = (tx - _prev_net[1]) / dt
+        _prev_net = (rx, tx)
+        _prev_time = now
+        _net_rx_history.append(rx_s)
+        _net_tx_history.append(tx_s)
+        if len(_net_rx_history) > 60:
+            _net_rx_history.pop(0)
+        if len(_net_tx_history) > 60:
+            _net_tx_history.pop(0)
+        return rx_s, tx_s
     with open('/proc/net/dev') as f:
         lines = f.readlines()[2:]  # skip headers
 
@@ -224,13 +306,30 @@ def read_net():
     return rx_s, tx_s
 
 def read_load():
+    if IS_MAC:
+        try:
+            return os.getloadavg()
+        except Exception:
+            return 0.0, 0.0, 0.0
     with open('/proc/loadavg') as f:
         parts = f.read().split()
     return float(parts[0]), float(parts[1]), float(parts[2])
 
 def read_uptime():
-    with open('/proc/uptime') as f:
-        secs = float(f.read().split()[0])
+    if IS_MAC:
+        try:
+            out = subprocess.run(['sysctl', '-n', 'kern.boottime'],
+                                 capture_output=True, text=True, timeout=3)
+            m = re.search(r'sec = (\d+)', out.stdout)
+            secs = time.time() - int(m.group(1)) if m else 0
+        except Exception:
+            secs = 0
+    else:
+        try:
+            with open('/proc/uptime') as f:
+                secs = float(f.read().split()[0])
+        except Exception:
+            secs = 0
     days = int(secs // 86400)
     hours = int((secs % 86400) // 3600)
     mins = int((secs % 3600) // 60)
@@ -247,6 +346,18 @@ def read_disk():
     return used / (1024**3), total / (1024**3), 100.0 * used / total if total else 0
 
 def read_hostname():
+    if IS_MAC:
+        try:
+            out = subprocess.run(['scutil', '--get', 'ComputerName'],
+                                 capture_output=True, text=True, timeout=3)
+            if out.returncode == 0 and out.stdout.strip():
+                return out.stdout.strip()
+        except Exception:
+            pass
+        try:
+            return _socket.gethostname()
+        except Exception:
+            return 'unknown'
     try:
         with open('/etc/hostname') as f:
             return f.read().strip()
@@ -254,6 +365,15 @@ def read_hostname():
         return 'unknown'
 
 def read_cpu_model():
+    if IS_MAC:
+        try:
+            out = subprocess.run(['sysctl', '-n', 'machdep.cpu.brand_string'],
+                                 capture_output=True, text=True, timeout=3)
+            if out.returncode == 0 and out.stdout.strip():
+                return out.stdout.strip()
+        except Exception:
+            pass
+        return 'Unknown CPU'
     try:
         with open('/proc/cpuinfo') as f:
             for line in f:
@@ -262,6 +382,25 @@ def read_cpu_model():
     except Exception:
         pass
     return 'Unknown CPU'
+
+def read_ip():
+    """Return the primary LAN IPv4 address, or '--'."""
+    if IS_MAC:
+        for iface in ['en0', 'en1']:
+            try:
+                out = subprocess.run(['ipconfig', 'getifaddr', iface],
+                                     capture_output=True, text=True, timeout=2)
+                if out.returncode == 0 and out.stdout.strip():
+                    return out.stdout.strip()
+            except Exception:
+                pass
+        return '--'
+    try:
+        out = subprocess.run(['hostname', '-I'], capture_output=True, text=True, timeout=2)
+        ips = out.stdout.strip().split()
+        return ips[0] if ips else '--'
+    except Exception:
+        return '--'
 
 # ── Drawing helpers ─────────────────────────────────────────────────
 def pct_color(pct):
@@ -662,14 +801,19 @@ def render_frame(w=1920, h=440):
 
     # Swap zone
     try:
-        with open('/proc/meminfo') as f:
-            mi = {}
-            for line in f:
-                parts = line.split()
-                mi[parts[0].rstrip(':')] = int(parts[1])
-        swap_total = mi.get('SwapTotal', 0)
-        swap_free = mi.get('SwapFree', 0)
-        swap_used = swap_total - swap_free
+        if IS_MAC and psutil is not None:
+            sm = psutil.swap_memory()
+            swap_total = sm.total
+            swap_used = sm.used
+        else:
+            with open('/proc/meminfo') as f:
+                mi = {}
+                for line in f:
+                    parts = line.split()
+                    mi[parts[0].rstrip(':')] = int(parts[1])
+            swap_total = mi.get('SwapTotal', 0)
+            swap_free = mi.get('SwapFree', 0)
+            swap_used = swap_total - swap_free
         if swap_total > 0:
             swap_pct = 100.0 * swap_used / swap_total
             sy = py0 + 24 + zone_h * 2
@@ -689,11 +833,15 @@ def render_frame(w=1920, h=440):
     draw_panel(draw, img, p3x, py0, p3w, ph, "TEMPERATURES")
 
     # Package temp hero
-    pkg_temp = temps.get('Package id 0', 0)
-    draw_hero_text(draw, img, p3x + 10, py0 + 28, f"{pkg_temp:.0f}",
-                   temp_color(pkg_temp), 68)
-    draw.text((p3x + 100, py0 + 34), "°C", fill=temp_color(pkg_temp), font=font(26))
-    draw.text((p3x + 100, py0 + 66), "Package", fill=TEXT_DIM, font=font(13))
+    if temps and 'Package id 0' in temps:
+        pkg_temp = temps['Package id 0']
+        draw_hero_text(draw, img, p3x + 10, py0 + 28, f"{pkg_temp:.0f}",
+                       temp_color(pkg_temp), 68)
+        draw.text((p3x + 100, py0 + 34), "°C", fill=temp_color(pkg_temp), font=font(26))
+        draw.text((p3x + 100, py0 + 66), "Package", fill=TEXT_DIM, font=font(13))
+    else:
+        draw_hero_text(draw, img, p3x + 10, py0 + 28, "N/A", TEXT_DIM, 68)
+        draw.text((p3x + 100, py0 + 66), "No sensor", fill=TEXT_DIM, font=font(13))
 
     # Per-core temps
     core_temps = {k: v for k, v in temps.items() if k.startswith('Core')}
@@ -723,28 +871,35 @@ def render_frame(w=1920, h=440):
     draw_panel(draw, img, p4x, py0, p4w, ph, "GPU")
 
     if gpu:
-        gname = gpu['name'].replace('NVIDIA ', '').replace('GeForce ', '')
+        gname = (gpu['name'] or '').replace('NVIDIA ', '').replace('GeForce ', '')
         draw.text((p4x + 10, py0 + 24), gname, fill=TEXT_DIM, font=font(14))
 
         # Temp hero
-        draw_hero_text(draw, img, p4x + 10, py0 + 44, f"{gpu['temp']}°C",
-                       temp_color(gpu['temp']), 50)
+        if gpu.get('temp') is not None:
+            draw_hero_text(draw, img, p4x + 10, py0 + 44, f"{gpu['temp']}°C",
+                           temp_color(gpu['temp']), 50)
+        else:
+            draw_hero_text(draw, img, p4x + 10, py0 + 44, "N/A", TEXT_DIM, 50)
 
         # Utilization
         uy = py0 + 112
         draw.text((p4x + 10, uy), "Utilization", fill=TEXT_DIM, font=font(12))
-        draw.text((p4x + 10, uy + 18), f"{gpu['util']}%",
-                  fill=pct_color(gpu['util']), font=font(28))
-        draw_glow_bar(draw, img, p4x + 10, uy + 54, p4w - 20, 18,
-                      gpu['util'], pct_color(gpu['util']))
+        if gpu.get('util') is not None:
+            draw.text((p4x + 10, uy + 18), f"{gpu['util']}%",
+                      fill=pct_color(gpu['util']), font=font(28))
+            draw_glow_bar(draw, img, p4x + 10, uy + 54, p4w - 20, 18,
+                          gpu['util'], pct_color(gpu['util']))
+        else:
+            draw.text((p4x + 10, uy + 18), "N/A", fill=TEXT_DIM, font=font(28))
 
         # VRAM
-        vram_pct = 100.0 * gpu['mem_used'] / gpu['mem_total'] if gpu['mem_total'] else 0
-        vy = py0 + ph // 2 + 40
-        draw.text((p4x + 10, vy), "VRAM", fill=TEXT_DIM, font=font(12))
-        draw.text((p4x + 10, vy + 18), f"{gpu['mem_used']}M / {gpu['mem_total']}M",
-                  fill=TEXT, font=font(20))
-        draw_glow_bar(draw, img, p4x + 10, vy + 46, p4w - 20, 18, vram_pct, CYAN)
+        if gpu.get('mem_used') is not None and gpu.get('mem_total'):
+            vram_pct = 100.0 * gpu['mem_used'] / gpu['mem_total']
+            vy = py0 + ph // 2 + 40
+            draw.text((p4x + 10, vy), "VRAM", fill=TEXT_DIM, font=font(12))
+            draw.text((p4x + 10, vy + 18), f"{gpu['mem_used']}M / {gpu['mem_total']}M",
+                      fill=TEXT, font=font(20))
+            draw_glow_bar(draw, img, p4x + 10, vy + 46, p4w - 20, 18, vram_pct, CYAN)
 
         # Power / Clock (hide if N/A)
         try:
@@ -808,12 +963,7 @@ def render_frame(w=1920, h=440):
     draw.text((p5x + 10, info_y), "Uptime", fill=TEXT_DIM, font=font(12))
     draw.text((p5x + 72, info_y), uptime_str, fill=TEXT, font=font(14))
 
-    try:
-        out = subprocess.run(['hostname', '-I'], capture_output=True, text=True, timeout=2)
-        ips = out.stdout.strip().split()
-        primary_ip = ips[0] if ips else '--'
-    except Exception:
-        primary_ip = '--'
+    primary_ip = read_ip()
     draw.text((p5x + 10, info_y + row_gap), "IP", fill=TEXT_DIM, font=font(12))
     draw.text((p5x + 72, info_y + row_gap), primary_ip, fill=TEXT, font=font(14))
 

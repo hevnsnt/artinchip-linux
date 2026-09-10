@@ -1,5 +1,17 @@
 #!/bin/bash
 # tinyscreen - ArtInChip USB bar display driver
+# Portable wrapper: works on Linux and macOS.
 
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-exec python3 "${SCRIPT_DIR}/tinyscreen.py" "$@"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Prefer the bundled venv python if present, else system python3
+PY="${SCRIPT_DIR}/venv/bin/python3"
+if [ ! -x "$PY" ]; then
+    PY="$(command -v python3)"
+fi
+if [ -z "$PY" ]; then
+    echo "tinyscreen: python3 not found. Install Python 3 first." >&2
+    exit 1
+fi
+
+exec "$PY" "${SCRIPT_DIR}/tinyscreen.py" "$@"
