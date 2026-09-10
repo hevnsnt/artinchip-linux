@@ -213,109 +213,160 @@ def _wrap(draw, text, f, max_w, max_lines=2):
     return lines
 
 
+def _circle_check(draw, cx, cy, r, done=False, overdue=False):
+    """Popular-app style round checkbox. Filled + tick when done."""
+    if done:
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=GREEN)
+        draw.line([(cx - r * 0.45, cy + r * 0.05), (cx - r * 0.05, cy + r * 0.45),
+                   (cx + r * 0.5, cy - r * 0.4)], fill=(0, 0, 0), width=3)
+    else:
+        col = RED if overdue else ACCENT
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=col, width=3)
+
+
+def _pill(draw, x, y, text, fg, bg, pad=8):
+    """Draw a rounded tag pill, return its width."""
+    tw = draw.textlength(text, font=font(16))
+    draw.rounded_rectangle([x, y, x + tw + pad * 2, y + 24], radius=12, fill=bg)
+    draw.text((x + pad, y + 3), text, fill=fg, font=font(16))
+    return tw + pad * 2
+
+
+TAG_COLORS = {
+    'finance': (255, 210, 70),
+    'health': (90, 230, 160),
+    'business': (150, 170, 255),
+    'lightcogswell': (190, 130, 255),
+    'fieldcraft': (120, 200, 255),
+}
+
+def _tag_color(tags):
+    for t in (tags or []):
+        if str(t).lower() in TAG_COLORS:
+            return TAG_COLORS[str(t).lower()]
+    return PURPLE
+
+
 def render_frame(w=1920, h=440):
-    """Render the todo dashboard. Returns a PIL Image (RGB)."""
+    """Render the todo dashboard: big TODAY list + one consolidated upcoming card."""
     img = Image.new('RGB', (w, h), BG)
     draw = ImageDraw.Draw(img)
 
-    # Background gradient
     for y in range(h):
         t = y / max(h - 1, 1)
-        c = _lerp_color((8, 12, 22), (4, 6, 12), t)
-        draw.line([(0, y), (w, y)], fill=c)
+        draw.line([(0, y), (w, y)], fill=_lerp_color((8, 12, 22), (4, 6, 12), t))
 
     draw = _draw_header(img, draw, w)
 
     today = date.today()
-    today_str = today.strftime('%A, %b %d')
     draw.text((20, 12), 'TASKS', fill=ACCENT, font=font(24))
-    draw.text((w - 20 - draw.textlength(today_str, font=font(20)), 14),
-              today_str, fill=TEXT_DIM, font=font(20))
+    stamp = today.strftime('%A, %b %d')
+    draw.text((w - 20 - draw.textlength(stamp, font=font(20)), 14), stamp,
+              fill=TEXT_DIM, font=font(20))
 
     tasks = _load_tasks()
-
     if tasks is None:
-        msg = 'No todo list yet. Create ~/.tinyscreen/todo.json'
-        draw.text((40, h // 2 - 20), msg, fill=TEXT_DIM, font=font(22))
-        hint = 'Ask your agent to add tasks, or run: todo-cli.py add "Task title"'
-        draw.text((40, h // 2 + 10), hint, fill=TEXT_DIM, font=font(16))
+        draw.text((40, h // 2 - 20), 'No todo list yet.', fill=TEXT_DIM, font=font(24))
+        draw.text((40, h // 2 + 14), 'Ask your agent to add tasks, or run todo-cli.py add "Task"',
+                  fill=TEXT_DIM, font=font(18))
         return img
 
     overdue, today_pending, today_done, upcoming = _split_tasks(tasks, today)
 
-    # --- Layout ---
     pad = 16
     body_y = 56
-    body_h = h - body_y - 8
-    left_w = 940
-    right_x = left_w + 12
+    body_h = h - body_y - 10
+    left_w = 1120
+    right_x = pad + left_w + 12
     right_w = w - right_x - pad
-    col_gap = 8
-    col_w = (right_w - 2 * col_gap) // 3
 
-    # --- Left: TODAY ---
-    _draw_panel_bg(draw, pad, body_y, left_w - pad, body_h)
-    draw.text((pad + 12, body_y + 8), 'TODAY', fill=ACCENT, font=font(20))
-    pending_count = len(today_pending)
-    draw.text((pad + 12 + draw.textlength('TODAY', font=font(20)) + 14, body_y + 11),
-              f'{pending_count} open', fill=TEXT_DIM, font=font(15))
+    # ---------- LEFT: TODAY (large) ----------
+    _draw_panel_bg(draw, pad, body_y, left_w, body_h)
+    draw.text((pad + 20, body_y + 12), 'TODAY', fill=ACCENT, font=font(26))
+    open_count = len(today_pending) + len(overdue)
+    cnt = f'{open_count} open'
+    draw.text((pad + 20 + draw.textlength('TODAY', font=font(26)) + 18, body_y + 18),
+              cnt, fill=TEXT_DIM, font=font(18))
 
-    row_h = 30
-    y = body_y + 40
-    max_rows = (body_h - 44) // row_h
+    row_h = 50
+    y = body_y + 48
+    x0 = pad + 20
+    row_w = left_w - 44
+    max_bottom = body_y + body_h - 8
 
-    # Overdue first
+    def draw_row(task, overdue=False, done=False):
+        nonlocal y
+        title_f = font(30)
+        tme = str(task.get('time', '') or '')
+        col = RED if overdue else (TEXT_DIM if done else TEXT_BRIGHT)
+        _circle_check(draw, x0 + 13, y + 15, 12, done=done, overdue=overdue)
+        tx = x0 + 40
+        if tme:
+            draw.text((tx, y + 2), tme, fill=(TEXT_DIM if done else ACCENT), font=font(24))
+            tx += 88
+        # tags pill on the right
+        tags = task.get('tags') or []
+        pill_w = 0
+        if tags:
+            pill_w = _pill(draw, x0 + row_w - 150, y + 2, '#' + str(tags[0]),
+                           (12, 16, 26), _tag_color(tags)) + 12
+        title = _truncate(draw, str(task.get('title', '')), title_f,
+                          row_w - (tx - x0) - pill_w)
+        draw.text((tx, y), title, fill=col, font=title_f)
+        if overdue:
+            draw.text((x0 + row_w - 106, y + 6), 'OVERDUE', fill=RED, font=font(16))
+        y += row_h
+
     for t in overdue:
-        if y + row_h > body_y + body_h - 6:
+        if y + row_h > max_bottom:
             break
-        _draw_task_row(draw, pad + 12, y, t, left_w - pad - 24, 58, overdue=True)
-        y += row_h
-    # Pending
+        draw_row(t, overdue=True)
     for t in today_pending:
-        if y + row_h > body_y + body_h - 6:
+        if y + row_h > max_bottom:
             break
-        _draw_task_row(draw, pad + 12, y, t, left_w - pad - 24, 58)
-        y += row_h
-    # Done (dimmed)
-    if today_done:
-        y += 2
-        draw.text((pad + 12, y - 2), 'DONE', fill=TEXT_DIM, font=font(14))
-        y += 18
+        draw_row(t)
+    if today_done and y + 30 < max_bottom:
+        y += 6
+        draw.text((x0, y), 'COMPLETED', fill=TEXT_DIM, font=font(16))
+        y += 26
         for t in today_done:
-            if y + row_h > body_y + body_h - 6:
+            if y + row_h - 14 > max_bottom:
                 break
-            _draw_task_row(draw, pad + 12, y, t, left_w - pad - 24, 58, done=True)
-            y += row_h
+            draw_row(t, done=True)
 
-    # --- Right: next 3 days ---
+    # ---------- RIGHT: UPCOMING, one consolidated card ----------
+    _draw_panel_bg(draw, right_x, body_y, right_w, body_h)
+    draw.text((right_x + 20, body_y + 12), 'UPCOMING', fill=ACCENT, font=font(26))
+    draw.text((right_x + 20 + draw.textlength('UPCOMING', font=font(26)) + 18,
+               body_y + 18), 'next 3 days', fill=TEXT_DIM, font=font(18))
+
+    rows = []
     for i in range(3):
         d = today + timedelta(days=i + 1)
-        cx = right_x + i * (col_w + col_gap)
-        _draw_panel_bg(draw, cx, body_y, col_w, body_h)
-        day_label = d.strftime('%a %d')
-        day_full = d.strftime('%A')
-        draw.text((cx + 10, body_y + 8), day_label, fill=ACCENT, font=font(18))
-        draw.text((cx + 10, body_y + 30), day_full, fill=TEXT_DIM, font=font(13))
-        yy = body_y + 52
-        day_tasks = upcoming.get(d, [])
-        if not day_tasks:
-            draw.text((cx + 10, yy), 'Nothing', fill=TEXT_DIM, font=font(15))
-        for t in day_tasks:
-            if yy + row_h > body_y + body_h - 6:
-                break
-            tme = str(t.get('time', '') or '')
-            if tme:
-                draw.text((cx + 10, yy), tme, fill=ACCENT, font=font(14))
-                tx = cx + 10 + 52
-            else:
-                tx = cx + 10
-            tw = col_w - (tx - cx) - 10
-            lines = _wrap(draw, str(t.get('title', '')), font(15), tw, max_lines=2)
-            draw.text((tx, yy), lines[0], fill=TEXT_BRIGHT, font=font(15))
-            if len(lines) > 1:
-                draw.text((tx + 6, yy + 15), lines[1], fill=TEXT_DIM, font=font(15))
-                yy += row_h + 15
-            else:
-                yy += row_h
+        for t in upcoming.get(d, []):
+            rows.append((d, t))
+
+    ry = body_y + 46
+    r_h = 34
+    due_w = 96
+    for d, t in rows:
+        if ry + r_h > body_y + body_h - 8:
+            break
+        draw.ellipse([right_x + 24, ry + 9, right_x + 32, ry + 17],
+                     fill=_tag_color(t.get('tags')))
+        tme = str(t.get('time', '') or '')
+        label = str(t.get('title', ''))
+        if tme:
+            label = f'{tme}  {label}'
+        f = font(22)
+        title = _truncate(draw, label, f, right_w - 60 - due_w)
+        draw.text((right_x + 44, ry), title, fill=TEXT_BRIGHT, font=f)
+        due_txt = d.strftime('%a %-m/%-d') if os.name != 'nt' else d.strftime('%a %#m/%#d')
+        draw.text((right_x + right_w - 20 - draw.textlength(due_txt, font=font(18)), ry + 3),
+                  due_txt, fill=ACCENT_DIM, font=font(18))
+        ry += r_h
+
+    if not rows:
+        draw.text((right_x + 20, ry), 'Nothing scheduled', fill=TEXT_DIM, font=font(22))
 
     return img
