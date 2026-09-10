@@ -247,6 +247,150 @@ def _tag_color(tags):
     return PURPLE
 
 
+# --- Firework celebration on task close -------------------------------
+# When a task that was open flips to done while the display is showing it,
+# play a ~1.8s firework animation, then remove that task from todo.json.
+import random
+
+_FW_DUR = 1.8
+_FW_GRAV = 260.0
+_FW = {
+    'open_keys': None,   # keys of open tasks last frame (None = first frame)
+    'anim_start': None,  # monotonic time the animation began
+    'dur': _FW_DUR,
+    'bursts': [],        # each: {t0, x, y, parts:[{ang, sp, life, r, col}]}
+    'closed': [],        # keys of tasks to remove when the animation ends
+}
+_FW_COLORS = [
+    (255, 215, 80), (0, 240, 255), (255, 120, 220),
+    (0, 255, 140), (190, 130, 255), (252, 254, 255),
+]
+
+def _task_key(t):
+    return (str(t.get('title', '')).strip(),
+            str(t.get('due', '')).strip(),
+            str(t.get('time', '')).strip())
+
+def frame_interval():
+    """Fast frames while the firework animation is running."""
+    return 1/30 if _FW['anim_start'] is not None else 1/2
+
+def _spawn_bursts(w, h, n):
+    """Create n staggered bursts across the board."""
+    bursts = []
+    for i in range(max(1, n)):
+        parts = []
+        for _ in range(34):
+            parts.append({
+                'ang': random.uniform(0, 2 * 3.14159),
+                'sp': random.uniform(90, 300),
+                'life': random.uniform(0.6, 1.1),
+                'r': random.uniform(1.4, 3.2),
+                'col': random.choice(_FW_COLORS),
+            })
+        bursts.append({
+            't0': random.uniform(0.0, 0.45),
+            'x': random.uniform(0.15, 0.85) * w,
+            'y': random.uniform(0.25, 0.70) * h,
+            'parts': parts,
+        })
+    return bursts
+
+def _draw_fireworks(img, t):
+    """Overlay fireworks + 'Done!' banner. t = seconds since anim start."""
+    from PIL import ImageDraw
+    overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+    W, H = img.size
+    # opening flash
+    if t < 0.14:
+        od.rectangle([0, 0, W, H], fill=(255, 255, 255, int(110 * (1 - t / 0.14))))
+    import math
+    for b in _FW['bursts']:
+        bt = t - b['t0']
+        if bt < 0:
+            continue
+        for p in b['parts']:
+            frac = bt / p['life']
+            if frac >= 1.0:
+                continue
+            x = b['x'] + p['sp'] * math.cos(p['ang']) * bt
+            y = b['y'] + p['sp'] * math.sin(p['ang']) * bt + 0.5 * _FW_GRAV * bt * bt
+            if y > H + 8:
+                continue
+            a = int(255 * (1.0 - frac))
+            r = max(1.0, p['r'] * (1.0 - 0.5 * frac))
+            od.ellipse([x - r, y - r, x + r, y + r], fill=p['col'] + (a,))
+            # short trail
+            if frac < 0.7:
+                od.ellipse([x - r * 1.6, y - r * 1.6, x + r * 1.6, y + r * 1.6],
+                           fill=p['col'] + (a // 3,))
+    # banner
+    if t < 1.4:
+        a = 255 if t < 0.15 else int(255 * (1.4 - t) / 1.25)
+        label = 'Done!' if len(_FW['closed']) == 1 else f'{len(_FW["closed"])} done!'
+        f = font(44)
+        tw = od.textlength(label, font=f)
+        bx = (W - tw) // 2
+        od.text((bx + 2, H // 2 - 26), label, fill=(0, 0, 0, a // 2), font=f)
+        od.text((bx, H // 2 - 28), label, fill=(0, 240, 255, a), font=f)
+    img.paste(overlay, (0, 0), overlay)
+
+def _remove_closed():
+    """Delete the celebrated tasks from todo.json (atomic write)."""
+    if not _FW['closed']:
+        return
+    try:
+        with open(TODOFILE) as f:
+            data = json.load(f)
+        tasks = data.get('tasks', [])
+        kept = [t for t in tasks
+                if not (t.get('done') and _task_key(t) in _FW['closed'])]
+        if len(kept) == len(tasks):
+            return
+        data['tasks'] = kept
+        tmp = TODOFILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, TODOFILE)
+        try:
+            os.utime(TODOFILE, (time.time() + 1, time.time() + 1))
+        except Exception:
+            pass
+        _cache['mtime'] = None
+    except Exception:
+        pass
+
+def _fireworks_tick(tasks, img, w, h):
+    """Detect open->done transitions, run the animation, remove tasks.
+    Returns True if the frame should be shown as-is (animation inactive)."""
+    now_open = set()
+    for t in tasks:
+        if not t.get('done'):
+            now_open.add(_task_key(t))
+    newly_closed = []
+    if _FW['open_keys'] is not None:
+        for t in tasks:
+            if t.get('done') and _task_key(t) in _FW['open_keys'] \
+                    and _task_key(t) not in newly_closed:
+                newly_closed.append(_task_key(t))
+    _FW['open_keys'] = now_open
+    if _FW['anim_start'] is None and newly_closed:
+        _FW['anim_start'] = time.monotonic()
+        _FW['closed'] = newly_closed
+        _FW['bursts'] = _spawn_bursts(w, h, 6 if len(newly_closed) == 1 else 8)
+    if _FW['anim_start'] is None:
+        return True
+    t = time.monotonic() - _FW['anim_start']
+    _draw_fireworks(img, t)
+    if t >= _FW['dur']:
+        _remove_closed()
+        _FW['anim_start'] = None
+        _FW['bursts'] = []
+        _FW['closed'] = []
+    return True
+
+
 def render_frame(w=1920, h=440):
     """Render the todo dashboard: big TODAY list + one consolidated upcoming card."""
     img = Image.new('RGB', (w, h), BG)
@@ -368,5 +512,8 @@ def render_frame(w=1920, h=440):
 
     if not rows:
         draw.text((right_x + 20, ry), 'Nothing scheduled', fill=TEXT_DIM, font=font(22))
+
+    # Firework celebration: detect tasks that just closed, animate, remove
+    _fireworks_tick(tasks, img, w, h)
 
     return img

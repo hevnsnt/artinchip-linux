@@ -1154,7 +1154,7 @@ def mode_single(disp, name, quality, extra_args=None):
             jpeg = image_to_jpeg(img, quality)
             if not disp.send(jpeg):
                 disp.wait_for_device()
-            time.sleep(interval)
+            time.sleep(getattr(mod, 'frame_interval', lambda: interval)())
     finally:
         _cleanup_mode(mod)
 
