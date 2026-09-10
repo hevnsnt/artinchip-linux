@@ -107,7 +107,39 @@ def rsa_public_decrypt(pub_key, ct):
     return m_bytes[idx + 1:]
 
 # ── USB + Auth ──────────────────────────────────────────────────────
+_usb_backend = None
+
+def _get_usb_backend():
+    """Resolve a libusb backend for pyusb.
+
+    On macOS, Homebrew installs libusb outside the default dyld search
+    path (/opt/homebrew/lib on Apple Silicon, /usr/local/lib on Intel),
+    so ctypes.util.find_library often misses it. Load it explicitly.
+    """
+    global _usb_backend
+    if _usb_backend is not None:
+        return _usb_backend or None
+    if IS_MAC:
+        try:
+            import usb.backend.libusb1 as libusb1
+            for path in ['/opt/homebrew/lib/libusb-1.0.dylib',
+                         '/usr/local/lib/libusb-1.0.dylib',
+                         '/opt/homebrew/lib/libusb-1.0.0.dylib',
+                         '/usr/local/lib/libusb-1.0.0.dylib']:
+                if os.path.isfile(path):
+                    be = libusb1.get_backend(find_library=lambda _p: path)
+                    if be:
+                        _usb_backend = be
+                        return be
+        except Exception:
+            pass
+    _usb_backend = None
+    return None
+
 def find_device():
+    backend = _get_usb_backend()
+    if backend:
+        return usb.core.find(idVendor=VID, idProduct=PID, backend=backend)
     return usb.core.find(idVendor=VID, idProduct=PID)
 
 def setup_device(dev):
