@@ -123,6 +123,7 @@ launchctl load ~/Library/LaunchAgents/com.tinyscreen.plist
 | **Network Monitor** | `--netmon` | Active connections, state breakdown, process names |
 | **News Crawl** | `--news` | Scrolling RSS headlines from Reuters, BBC, Hacker News |
 | **Pomodoro Timer** | `--pomodoro` | 25/5 focus timer with circular progress and color shifts |
+| **Todo List** | `--todo` | Today's tasks + next 3 days, live from `~/.tinyscreen/todo.json` |
 | **Network Map** | `--lanmap` | Live network device scanner via nmap with color-coded device types |
 | **DNS Blocker** | `--pihole` | AdGuard Home / Pi-hole stats with timeline and top blocked |
 | **Speed Test** | `--speedtest` | Internet speed test with animated particles and arc gauges |

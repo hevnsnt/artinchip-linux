@@ -3,7 +3,7 @@
 
 # Mode to run. Options:
 #   sysmon, ticker, clock, matrix, visualizer, nowplaying,
-#   docker, netmon, news, pomodoro, url, video, image, test
+#   docker, netmon, news, pomodoro, todo, url, video, image, test
 #
 # Or use "rotate" to cycle through multiple modes.
 mode: rotate

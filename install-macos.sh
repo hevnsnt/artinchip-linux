@@ -68,6 +68,7 @@ mkdir -p "$INSTALL_DIR/modes"
 cp "$(dirname "$0")/tinyscreen.py" "$INSTALL_DIR/"
 cp "$(dirname "$0")/tinyscreen" "$INSTALL_DIR/"
 cp "$(dirname "$0")/sysmon.py" "$INSTALL_DIR/"
+cp "$(dirname "$0")/todo-cli.py" "$INSTALL_DIR/"
 cp "$(dirname "$0")/uninstall.sh" "$INSTALL_DIR/" 2>/dev/null || true
 cp "$(dirname "$0")"/modes/*.py "$INSTALL_DIR/modes/"
 cp -r "$(dirname "$0")/modes/scenes" "$INSTALL_DIR/modes/" 2>/dev/null || true

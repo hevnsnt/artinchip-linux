@@ -1062,7 +1062,7 @@ def mode_image(disp, path, quality):
 # ── Mode: generic module runner ─────────────────────────────────────
 MODES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'modes')
 ALL_MODES = ['sysmon', 'ticker', 'clock', 'matrix', 'visualizer',
-             'nowplaying', 'docker', 'netmon', 'lanmap', 'pihole', 'speedtest', 'news', 'pomodoro']
+             'nowplaying', 'docker', 'netmon', 'lanmap', 'pihole', 'speedtest', 'news', 'pomodoro', 'todo']
 
 def _load_mode(name):
     """Import a mode module by name. Returns module or None."""
@@ -1082,6 +1082,7 @@ def _load_mode(name):
         'speedtest': 'speedtest_mode',
         'news': 'newscrawl',
         'pomodoro': 'pomodoro',
+        'todo': 'todo',
     }
     mod_name = module_map.get(name, name)
     try:
@@ -1132,6 +1133,7 @@ def _mode_fps(name):
         'pihole':     1/2,   # 2fps  — DNS stats
         'speedtest':  1/2,   # 2fps  — speed test display
         'pomodoro':   1,     # 1fps  — countdown seconds
+        'todo':       1/2,   # 2fps  — re-reads todo.json for live updates
     }.get(name, 1.0)
 
 def mode_single(disp, name, quality, extra_args=None):
@@ -1292,6 +1294,7 @@ def main():
                         help='Group lanmap results by device type')
     group.add_argument('--news', action='store_true', help='RSS news crawl')
     group.add_argument('--pomodoro', action='store_true', help='Pomodoro focus timer')
+    group.add_argument('--todo', action='store_true', help='Todo list (today + next 3 days)')
     group.add_argument('--show', nargs='+', metavar='MODE',
                        help='Rotate through modes (use "all" for all, or list names)')
     group.add_argument('--monitor', action='store_true',
