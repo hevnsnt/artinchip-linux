@@ -249,21 +249,30 @@ def _tag_color(tags):
 
 # --- Firework celebration on task close -------------------------------
 # When a task that was open flips to done while the display is showing it,
-# play a ~1.8s firework animation, then remove that task from todo.json.
+# play a full fireworks show (~3s: rockets rising, flash + shockwave
+# detonations, flickering trails, embers, grand finale), then remove
+# the closed task from todo.json.
+import math
 import random
 
-_FW_DUR = 1.8
-_FW_GRAV = 260.0
+_FW_DUR = 3.0
 _FW = {
-    'open_keys': None,   # keys of open tasks last frame (None = first frame)
-    'anim_start': None,  # monotonic time the animation began
+    'open_keys': None,
+    'anim_start': None,
     'dur': _FW_DUR,
-    'bursts': [],        # each: {t0, x, y, parts:[{ang, sp, life, r, col}]}
-    'closed': [],        # keys of tasks to remove when the animation ends
+    'rockets': [],   # {t0, dur, x0, x1, y1, seed}
+    'bursts': [],    # {t0, x, y, col, parts:[...], ring}
+    'closed': [],
+    'prev': {},      # particle trail cache: (bi,pi) -> (x, y)
 }
-_FW_COLORS = [
-    (255, 215, 80), (0, 240, 255), (255, 120, 220),
-    (0, 255, 140), (190, 130, 255), (252, 254, 255),
+_GOLD = (255, 210, 70)
+_GOLD_BRIGHT = (255, 235, 140)
+_FW_PALETTES = [
+    [(255, 210, 70), (255, 235, 140), (255, 250, 235)],
+    [(0, 240, 255), (120, 230, 255), (255, 255, 255)],
+    [(255, 90, 160), (255, 150, 200), (255, 240, 245)],
+    [(0, 255, 150), (150, 255, 200), (245, 255, 250)],
+    [(190, 130, 255), (230, 190, 255), (250, 245, 255)],
 ]
 
 def _task_key(t):
@@ -272,69 +281,184 @@ def _task_key(t):
             str(t.get('time', '')).strip())
 
 def frame_interval():
-    """Fast frames while the firework animation is running."""
+    """Fast frames while the celebration is running."""
     return 1/30 if _FW['anim_start'] is not None else 1/2
 
-def _spawn_bursts(w, h, n):
-    """Create n staggered bursts across the board."""
-    bursts = []
-    for i in range(max(1, n)):
-        parts = []
-        for _ in range(34):
-            parts.append({
-                'ang': random.uniform(0, 2 * 3.14159),
-                'sp': random.uniform(90, 300),
-                'life': random.uniform(0.6, 1.1),
-                'r': random.uniform(1.4, 3.2),
-                'col': random.choice(_FW_COLORS),
-            })
-        bursts.append({
-            't0': random.uniform(0.0, 0.45),
-            'x': random.uniform(0.15, 0.85) * w,
-            'y': random.uniform(0.25, 0.70) * h,
-            'parts': parts,
+def _build_show(w, h):
+    """Pre-compute rockets + bursts for the whole show."""
+    rockets, bursts = [], []
+    # four rockets on 0.35s cadence so multiple bursts are alive together
+    for i, t0 in enumerate((0.0, 0.35, 0.70, 1.05)):
+        x1 = random.uniform(0.20, 0.80) * w
+        y1 = random.uniform(0.18, 0.40) * h
+        rockets.append({
+            't0': t0, 'dur': 0.45,
+            'x0': x1 + random.uniform(-70, 70),
+            'x1': x1, 'y1': y1,
+            'seed': random.random() * 10,
         })
-    return bursts
+        _add_burst(bursts, x1, y1, t0 + 0.45,
+                   palette_idx=i % len(_FW_PALETTES), n=150)
+    # grand finale: triple burst, big + staggered
+    fx, fy = w / 2, h * 0.30
+    _add_burst(bursts, fx - w * 0.17, h * 0.33, 2.00,
+               palette_idx=2, n=160)
+    _add_burst(bursts, fx, h * 0.26, 2.10,
+               palette_idx=0, n=230)
+    _add_burst(bursts, fx + w * 0.17, h * 0.35, 2.20,
+               palette_idx=1, n=160)
+    _FW['rockets'] = rockets
+    _FW['bursts'] = bursts
+    _FW['prev'] = {}
 
-def _draw_fireworks(img, t):
-    """Overlay fireworks + 'Done!' banner. t = seconds since anim start."""
-    from PIL import ImageDraw
-    overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
-    od = ImageDraw.Draw(overlay)
+def _add_burst(bursts, x, y, t0, palette_idx, n):
+    pal = _FW_PALETTES[palette_idx]
+    parts = []
+    for _ in range(n):
+        main = random.random() < 0.72
+        parts.append({
+            'ang': random.uniform(0, 2 * math.pi),
+            'sp': random.uniform(120, 460) if main else random.uniform(70, 190),
+            'life': (random.uniform(1.0, 1.9) if main
+                     else random.uniform(1.8, 2.8)),
+            'r': random.uniform(1.8, 3.8),
+            'col': random.choice(pal),
+            'ph': random.random() * 10,
+            'ember': not main,
+        })
+    bursts.append({'t0': t0, 'x': x, 'y': y, 'col': pal[0],
+                   'parts': parts, 'ring': t0})
+
+def _rocket_pos(rk, t, bottom):
+    """Rocket position at show-time t (None if not yet launched/finished)."""
+    if t < rk['t0'] or t > rk['t0'] + rk['dur']:
+        return None
+    f = (t - rk['t0']) / rk['dur']
+    ease = f * f
+    x = rk['x0'] + (rk['x1'] - rk['x0']) * ease \
+        + math.sin(f * 9 + rk['seed']) * 6 * (1 - f)
+    y = bottom + (rk['y1'] - bottom) * ease
+    return x, y, f
+
+def _draw_celebration(img, t):
+    from PIL import ImageDraw, ImageFilter, ImageChops
     W, H = img.size
-    # opening flash
-    if t < 0.14:
-        od.rectangle([0, 0, W, H], fill=(255, 255, 255, int(110 * (1 - t / 0.14))))
-    import math
-    for b in _FW['bursts']:
+    h_bottom = H + 12
+    dim_layer = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+    dd = ImageDraw.Draw(dim_layer)
+    glow = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+    parts = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    od = ImageDraw.Draw(parts)
+
+    # dim the board into night so the sky reads (hold, fade out last 0.5s)
+    if t < 0.15:
+        dim = int(205 * (t / 0.15))
+    elif t < 2.5:
+        dim = 205
+    else:
+        dim = int(205 * max(0.0, (3.0 - t) / 0.5))
+    dd.rectangle([0, 0, W, H], fill=(0, 0, 0, dim))
+    img.paste(dim_layer, (0, 0), dim_layer)
+
+    # opening gold flash (additive)
+    if t < 0.18:
+        a = int(190 * (1 - t / 0.18))
+        gd.rectangle([0, 0, W, H], fill=(255, 230, 150, a))
+
+    # ── rockets ──
+    for rk in _FW['rockets']:
+        pos = _rocket_pos(rk, t, h_bottom)
+        if pos is None:
+            continue
+        x, y, f = pos
+        core = max(2.0, 4.5 * (1 - f * 0.5))
+        od.ellipse([x - core, y - core, x + core, y + core],
+                   fill=(255, 245, 210, 255))
+        od.ellipse([x - core * 2, y - core * 2,
+                    x + core * 2, y + core * 2],
+                   fill=(255, 200, 90, 120))
+        tx = x - (rk['x1'] - rk['x0']) * 0.06
+        od.line([(x, y), (tx, y + 46 + random.uniform(-10, 10))],
+                fill=(255, 210, 120, 220), width=3)
+        od.line([(x, y), (tx * 0.5 + x * 0.5, y + 80)],
+                fill=(255, 150, 60, 90), width=2)
+
+    # ── bursts ──
+    for bi, b in enumerate(_FW['bursts']):
         bt = t - b['t0']
         if bt < 0:
             continue
-        for p in b['parts']:
+        # white-hot core flash (additive)
+        if bt < 0.35:
+            cr = 90 * (bt / 0.35) + 18
+            for k in (4, 3, 2, 1):
+                gd.ellipse([b['x'] - cr / k, b['y'] - cr / k,
+                            b['x'] + cr / k, b['y'] + cr / k],
+                           fill=(255, 250, 230, int(220 / k * (1 - bt / 0.35))))
+        # shockwave ring
+        if bt < 0.5:
+            rr = 14 + bt * 340
+            ra = int(190 * (1 - bt / 0.5))
+            od.ellipse([b['x'] - rr, b['y'] - rr,
+                        b['x'] + rr, b['y'] + rr],
+                       outline=(255, 255, 255, ra), width=2)
+        # particles
+        for pi, p in enumerate(b['parts']):
+            decay = 1.15
+            vt = math.exp(-decay * bt)
+            reach = p['sp'] / decay * (1 - vt)
+            x = b['x'] + math.cos(p['ang']) * reach
+            y = b['y'] + math.sin(p['ang']) * reach \
+                + 0.5 * 240 * bt * bt
+            if y > H + 10:
+                continue
             frac = bt / p['life']
             if frac >= 1.0:
                 continue
-            x = b['x'] + p['sp'] * math.cos(p['ang']) * bt
-            y = b['y'] + p['sp'] * math.sin(p['ang']) * bt + 0.5 * _FW_GRAV * bt * bt
-            if y > H + 8:
+            flick = 0.6 + 0.4 * math.sin(bt * (20 + p['ph']) + p['ph'])
+            if random.random() < (0.28 if p['ember'] else 0.07):
+                flick *= 0.35
+            a = int(255 * max(0.0, flick) * min(1.0, (1 - frac) * 1.7))
+            if a < 20:
                 continue
-            a = int(255 * (1.0 - frac))
-            r = max(1.0, p['r'] * (1.0 - 0.5 * frac))
-            od.ellipse([x - r, y - r, x + r, y + r], fill=p['col'] + (a,))
-            # short trail
-            if frac < 0.7:
-                od.ellipse([x - r * 1.6, y - r * 1.6, x + r * 1.6, y + r * 1.6],
-                           fill=p['col'] + (a // 3,))
-    # banner
-    if t < 1.4:
-        a = 255 if t < 0.15 else int(255 * (1.4 - t) / 1.25)
-        label = 'Done!' if len(_FW['closed']) == 1 else f'{len(_FW["closed"])} done!'
-        f = font(44)
+            r = max(1.5, p['r'] * (1 - 0.45 * frac))
+            col = p['col']
+            key = (bi, pi)
+            prev = _FW['prev'].get(key)
+            if prev is not None and frac < 0.9:
+                od.line([prev, (x, y)], fill=col + (a // 2,), width=2)
+            od.ellipse([x - r, y - r, x + r, y + r], fill=col + (a,))
+            if frac < 0.3:
+                gd.ellipse([x - r * 2.2, y - r * 2.2,
+                            x + r * 2.2, y + r * 2.2],
+                           fill=(255, 255, 240, a // 3))
+            _FW['prev'][key] = (x, y)
+
+    # ── TASK COMPLETE banner (additive glow + solid text) ──
+    if t < 2.5:
+        pop = min(1.0, t / 0.16)
+        size = int(58 * (0.6 + 0.4 * pop))
+        f = font(size)
+        label = 'TASK COMPLETE'
         tw = od.textlength(label, font=f)
         bx = (W - tw) // 2
-        od.text((bx + 2, H // 2 - 26), label, fill=(0, 0, 0, a // 2), font=f)
-        od.text((bx, H // 2 - 28), label, fill=(0, 240, 255, a), font=f)
-    img.paste(overlay, (0, 0), overlay)
+        by = H // 2 - size // 2 - 6
+        a = 255 if t < 2.0 else int(255 * (2.5 - t) / 0.5)
+        gd.text((bx, by), label, fill=_GOLD + (200,), font=f)
+        od.text((bx + 3, by + 3), label, fill=(30, 20, 0, a), font=f)
+        od.text((bx, by), label, fill=_GOLD_BRIGHT + (a,), font=f)
+
+    # additive passes: composite layers over black, then screen-blend so
+    # colors glow instead of dimming against the board
+    def _additive(layer):
+        base = Image.new('RGB', img.size, (0, 0, 0))
+        base.paste(layer, (0, 0), layer)
+        return ImageChops.screen(img, base)
+
+    img = _additive(glow)
+    img = _additive(parts)
+    return img
 
 def _remove_closed():
     """Delete the celebrated tasks from todo.json (atomic write)."""
@@ -378,17 +502,19 @@ def _fireworks_tick(tasks, img, w, h):
     if _FW['anim_start'] is None and newly_closed:
         _FW['anim_start'] = time.monotonic()
         _FW['closed'] = newly_closed
-        _FW['bursts'] = _spawn_bursts(w, h, 6 if len(newly_closed) == 1 else 8)
+        _build_show(w, h)
     if _FW['anim_start'] is None:
-        return True
+        return img
     t = time.monotonic() - _FW['anim_start']
-    _draw_fireworks(img, t)
+    img = _draw_celebration(img, t)
     if t >= _FW['dur']:
         _remove_closed()
         _FW['anim_start'] = None
+        _FW['rockets'] = []
         _FW['bursts'] = []
         _FW['closed'] = []
-    return True
+        _FW['prev'] = {}
+    return img
 
 
 def render_frame(w=1920, h=440):
@@ -514,6 +640,6 @@ def render_frame(w=1920, h=440):
         draw.text((right_x + 20, ry), 'Nothing scheduled', fill=TEXT_DIM, font=font(22))
 
     # Firework celebration: detect tasks that just closed, animate, remove
-    _fireworks_tick(tasks, img, w, h)
+    img = _fireworks_tick(tasks, img, w, h)
 
     return img
