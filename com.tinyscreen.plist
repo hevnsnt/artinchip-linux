@@ -10,13 +10,12 @@
         <!-- EDIT: replace YOUR_USER with your macOS username -->
         <string>/Users/YOUR_USER/.tinyscreen/tinyscreen</string>
         <!-- EDIT: pick one mode. Examples:
-             url http://YOUR-DASHBOARD-URL/  (website dashboard)
+             todo                            (todo list, today + next 3 days)
              sysmon                          (system monitor)
              clock                           (clock + weather)
-             image /path/to/image.jpg
+             url http://YOUR-DASHBOARD-URL/  (website dashboard)
         -->
-        <string>--url</string>
-        <string>http://YOUR-DASHBOARD-URL/</string>
+        <string>--todo</string>
         <string>--fg</string>
     </array>
 
