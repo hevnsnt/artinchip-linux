@@ -186,6 +186,33 @@ def _draw_task_row(draw, x, y, task, max_w, time_w, done=False, overdue=False):
         draw.text((x + max_w - 140, y + 2), tag_str, fill=PURPLE, font=font(13))
 
 
+def _wrap(draw, text, f, max_w, max_lines=2):
+    """Wrap text into at most max_lines lines that fit max_w, ellipsizing if clipped."""
+    words = text.split()
+    lines, cur = [], ''
+    for wd in words:
+        trial = (cur + ' ' + wd).strip()
+        if not cur or draw.textlength(trial, font=f) <= max_w:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = wd
+            if len(lines) >= max_lines - 1:
+                break
+    if cur and len(lines) < max_lines:
+        lines.append(cur)
+    if not lines:
+        return ['']
+    while draw.textlength(lines[-1], font=f) > max_w and len(lines[-1]) > 1:
+        lines[-1] = lines[-1][:-1]
+    joined = ' '.join(lines)
+    if len(joined) < len(' '.join(words)) and len(lines) == max_lines:
+        while draw.textlength(lines[-1] + '...', font=f) > max_w and len(lines[-1]) > 1:
+            lines[-1] = lines[-1][:-1]
+        lines[-1] += '...'
+    return lines
+
+
 def render_frame(w=1920, h=440):
     """Render the todo dashboard. Returns a PIL Image (RGB)."""
     img = Image.new('RGB', (w, h), BG)
@@ -220,7 +247,7 @@ def render_frame(w=1920, h=440):
     pad = 16
     body_y = 56
     body_h = h - body_y - 8
-    left_w = 1010
+    left_w = 940
     right_x = left_w + 12
     right_w = w - right_x - pad
     col_gap = 8
@@ -282,8 +309,13 @@ def render_frame(w=1920, h=440):
                 tx = cx + 10 + 52
             else:
                 tx = cx + 10
-            title = _truncate(draw, str(t.get('title', '')), font(15), col_w - (tx - cx) - 10)
-            draw.text((tx, yy), title, fill=TEXT_BRIGHT, font=font(15))
-            yy += row_h
+            tw = col_w - (tx - cx) - 10
+            lines = _wrap(draw, str(t.get('title', '')), font(15), tw, max_lines=2)
+            draw.text((tx, yy), lines[0], fill=TEXT_BRIGHT, font=font(15))
+            if len(lines) > 1:
+                draw.text((tx + 6, yy + 15), lines[1], fill=TEXT_DIM, font=font(15))
+                yy += row_h + 15
+            else:
+                yy += row_h
 
     return img
