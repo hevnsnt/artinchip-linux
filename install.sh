@@ -108,6 +108,7 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="33c3", ATTR{idProduct}=="0e01", MODE="0666"
 SUBSYSTEM=="usb", ATTR{idVendor}=="33c3", ATTR{idProduct}=="0e02", MODE="0666"
 SUBSYSTEM=="usb", ATTR{idVendor}=="33c3", ATTR{idProduct}=="0e04", MODE="0666"
 SUBSYSTEM=="usb", ATTR{idVendor}=="33c3", ATTR{idProduct}=="0e05", MODE="0666"
+SUBSYSTEM=="usb", ATTR{idVendor}=="0db0", ATTR{idProduct}=="7881", MODE="0666"
 EOF
 udevadm control --reload-rules 2>/dev/null
 udevadm trigger 2>/dev/null

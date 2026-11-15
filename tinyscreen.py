@@ -56,7 +56,8 @@ from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 FRAME_START_MAGIC = 0xA1C62B01
 AUTH_DEV_MAGIC    = 0xA1C62B10
 AUTH_HOST_MAGIC   = 0xA1C62B11
-VID, PID = 0x33C3, 0x0E02
+DEVICE_IDS = [(0x33C3, 0x0E02), (0x33C3, 0x0E01), (0x33C3, 0x0E04), (0x33C3, 0x0E05),
+              (0x0DB0, 0x7881)]  # 0db0:7881 = MSI RTX 5090 Lightning Z built-in screen
 EP_OUT, EP_IN = 0x01, 0x81
 MAX_TRANSFER = 4096 * 64
 
@@ -106,7 +107,7 @@ def rsa_public_decrypt(pub_key, ct):
 
 # ── USB + Auth ──────────────────────────────────────────────────────
 def find_device():
-    return usb.core.find(idVendor=VID, idProduct=PID)
+    return usb.core.find(custom_match=lambda d: (d.idVendor, d.idProduct) in DEVICE_IDS)
 
 def setup_device(dev):
     try:
