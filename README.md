@@ -48,6 +48,7 @@
 | ArtInChip USB Display (0e01) | Various | ArtInChip | `33c3:0e01` | Should work (untested) |
 | ArtInChip USB Display (0e04) | Various | ArtInChip | `33c3:0e04` | Should work (untested) |
 | ArtInChip USB Display (0e05) | Various | ArtInChip | `33c3:0e05` | Should work (untested) |
+| MSI RTX 5090 Lightning Z built-in screen | 1280x800 | ArtInChip (AiCast v5) | `0db0:7881` | Working (modes are laid out for 1920x440) |
 
 If your `lsusb` shows **`33c3:0e0x`** and you're stuck on Linux, this is for you.
 
@@ -307,6 +308,10 @@ Replug the USB cable, or run: `sudo udevadm control --reload-rules && sudo udeva
 ### Display shows nothing after auth
 
 Make sure the `aic_drm_ud` kernel module isn't loaded: `lsmod | grep aic`. If loaded, blacklist it: `echo "blacklist aic_drm_ud" | sudo tee /etc/modprobe.d/blacklist-aic.conf`
+
+### Display keeps resetting every few seconds
+
+Wine/Proton (e.g. Battle.net or a running game) claims driverless USB devices it can open and fights tinyscreen for the display. Quit it, or restrict the udev rule to your user instead of `MODE="0666"`.
 
 ### --url mode shows black screen
 

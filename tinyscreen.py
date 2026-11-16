@@ -21,6 +21,7 @@ import io
 import os
 import re
 import secrets
+import select
 import resource
 import subprocess
 import signal
@@ -56,7 +57,8 @@ from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 FRAME_START_MAGIC = 0xA1C62B01
 AUTH_DEV_MAGIC    = 0xA1C62B10
 AUTH_HOST_MAGIC   = 0xA1C62B11
-VID, PID = 0x33C3, 0x0E02
+DEVICE_IDS = [(0x33C3, 0x0E02), (0x33C3, 0x0E01), (0x33C3, 0x0E04), (0x33C3, 0x0E05),
+              (0x0DB0, 0x7881)]  # 0db0:7881 = MSI RTX 5090 Lightning Z built-in screen
 EP_OUT, EP_IN = 0x01, 0x81
 MAX_TRANSFER = 4096 * 64
 
@@ -106,7 +108,7 @@ def rsa_public_decrypt(pub_key, ct):
 
 # ── USB + Auth ──────────────────────────────────────────────────────
 def find_device():
-    return usb.core.find(idVendor=VID, idProduct=PID)
+    return usb.core.find(custom_match=lambda d: (d.idVendor, d.idProduct) in DEVICE_IDS)
 
 def setup_device(dev):
     try:
@@ -161,6 +163,36 @@ def send_frame(dev, jpeg_data, media_format, frame_id):
     for pos in range(0, len(jpeg_data), MAX_TRANSFER):
         bulk_out(dev, bytes(jpeg_data[pos:pos + MAX_TRANSFER]), timeout=10000)
 
+# ── MSI Lightning Z control channel ─────────────────────────────────
+def _msi_packet(text):
+    """MSI framing: 0x5A | len16be | text | sum8 | 0x5A, with 0x5A/0x5B escaped, in a 1024-byte report."""
+    body = (len(text) + 5).to_bytes(2, 'big') + text.encode()
+    body += bytes([sum(body) & 0xFF])
+    body = body.replace(b'\x5b', b'\x5b\x02').replace(b'\x5a', b'\x5b\x01')
+    return b'\x00' + (b'\x5a' + body + b'\x5a').ljust(1024, b'\x00')   # report ID 0 + report
+
+def msi_show_usb_frames(on=True):
+    """After power-on the MSI screen plays its built-in animation and ignores frames until it gets
+    "conn" and "extendedDisplay" on its HID interface, as MSI's own service sends them.
+    on=False switches back to the animation; otherwise a reboot leaves the last frame frozen."""
+    for name in os.listdir('/sys/class/hidraw'):
+        with open(f'/sys/class/hidraw/{name}/device/uevent') as f:
+            if 'HID_ID=0003:00000DB0:00007881' in f.read():
+                break
+    else:
+        raise OSError('HID interface not found')
+    fd = os.open(f'/dev/{name}', os.O_RDWR)
+    try:
+        conn = f'POST conn 1\r\nSeqNumber=1\r\nContentType=json\r\nDate={int(time.time() * 1000)}\r\n\r\n'
+        os.write(fd, _msi_packet(conn))
+        os.write(fd, _msi_packet(conn))
+        select.select([fd], [], [], 1.0)            # wait for the reply, like MSI's service
+        body = '{"enable":true}' if on else '{"enable":false}'
+        os.write(fd, _msi_packet('POST extendedDisplay 1\r\nSeqNumber=110\r\nContentType=json\r\n'
+                                 f'ContentLength={len(body)}\r\n\r\n{body}'))
+    finally:
+        os.close(fd)
+
 # ── Display connection with auto-reconnect ──────────────────────────
 class Display:
     """Manages USB device lifecycle with auto-reconnect."""
@@ -182,6 +214,11 @@ class Display:
                 log("Authentication failed")
                 return False
             log(f"Connected: {self.w}x{self.h} @ {self.fps}fps")
+            if (self.dev.idVendor, self.dev.idProduct) == (0x0DB0, 0x7881):
+                try:
+                    msi_show_usb_frames()
+                except OSError as e:
+                    log(f"MSI control channel: {e} (the screen may keep showing its own animation)")
             self.frame_id = 0
             return True
         except Exception as e:
@@ -1129,6 +1166,10 @@ def mode_test(disp, quality):
 def handle_sigterm(signum, frame):
     log("SIGTERM, shutting down...")
     cleanup_children()
+    try:
+        msi_show_usb_frames(False)          # MSI Lightning Z only; no-op for other displays
+    except OSError:
+        pass
     for f in [PIDFILE, STATEFILE]:
         try:
             os.unlink(f)
