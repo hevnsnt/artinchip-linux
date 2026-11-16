@@ -21,6 +21,7 @@ import io
 import os
 import re
 import secrets
+import select
 import resource
 import subprocess
 import signal
@@ -162,6 +163,35 @@ def send_frame(dev, jpeg_data, media_format, frame_id):
     for pos in range(0, len(jpeg_data), MAX_TRANSFER):
         bulk_out(dev, bytes(jpeg_data[pos:pos + MAX_TRANSFER]), timeout=10000)
 
+# ── MSI Lightning Z control channel ─────────────────────────────────
+def _msi_packet(text):
+    """MSI framing: 0x5A | len16be | text | sum8 | 0x5A, with 0x5A/0x5B escaped, in a 1024-byte report."""
+    body = (len(text) + 5).to_bytes(2, 'big') + text.encode()
+    body += bytes([sum(body) & 0xFF])
+    body = body.replace(b'\x5b', b'\x5b\x02').replace(b'\x5a', b'\x5b\x01')
+    return b'\x00' + (b'\x5a' + body + b'\x5a').ljust(1024, b'\x00')   # report ID 0 + report
+
+def msi_show_usb_frames():
+    """After power-on the MSI screen plays its built-in animation and ignores frames until it gets
+    "conn" and "extendedDisplay" on its HID interface, as MSI's own service sends them."""
+    for name in os.listdir('/sys/class/hidraw'):
+        with open(f'/sys/class/hidraw/{name}/device/uevent') as f:
+            if 'HID_ID=0003:00000DB0:00007881' in f.read():
+                break
+    else:
+        raise OSError('HID interface not found')
+    fd = os.open(f'/dev/{name}', os.O_RDWR)
+    try:
+        conn = f'POST conn 1\r\nSeqNumber=1\r\nContentType=json\r\nDate={int(time.time() * 1000)}\r\n\r\n'
+        os.write(fd, _msi_packet(conn))
+        os.write(fd, _msi_packet(conn))
+        select.select([fd], [], [], 1.0)            # wait for the reply, like MSI's service
+        body = '{"enable":true}'
+        os.write(fd, _msi_packet('POST extendedDisplay 1\r\nSeqNumber=110\r\nContentType=json\r\n'
+                                 f'ContentLength={len(body)}\r\n\r\n{body}'))
+    finally:
+        os.close(fd)
+
 # ── Display connection with auto-reconnect ──────────────────────────
 class Display:
     """Manages USB device lifecycle with auto-reconnect."""
@@ -183,6 +213,11 @@ class Display:
                 log("Authentication failed")
                 return False
             log(f"Connected: {self.w}x{self.h} @ {self.fps}fps")
+            if (self.dev.idVendor, self.dev.idProduct) == (0x0DB0, 0x7881):
+                try:
+                    msi_show_usb_frames()
+                except OSError as e:
+                    log(f"MSI control channel: {e} (the screen may keep showing its own animation)")
             self.frame_id = 0
             return True
         except Exception as e:
