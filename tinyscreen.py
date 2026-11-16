@@ -344,10 +344,18 @@ def is_running(pid):
     except OSError:
         return False
 
+def _ancestors():
+    """Our PID and every parent up to init (e.g. sudo, xvfb-run or a shell that ran us)."""
+    pids, pid = set(), os.getpid()
+    while pid > 1:
+        pids.add(pid)
+        with open(f'/proc/{pid}/stat') as f:
+            pid = int(f.read().rsplit(')', 1)[1].split()[1])
+    return pids
+
 def _find_other_pids():
-    """Find tinyscreen.py PIDs other than our own process tree."""
-    my_pid = os.getpid()
-    my_ppid = os.getppid()
+    """Find tinyscreen.py PIDs other than our own process and its ancestors."""
+    skip = _ancestors()
     pids = []
     try:
         result = subprocess.run(['pgrep', '-f', 'tinyscreen.py'],
@@ -356,7 +364,7 @@ def _find_other_pids():
             if not line:
                 continue
             pid = int(line)
-            if pid != my_pid and pid != my_ppid:
+            if pid not in skip:
                 pids.append(pid)
     except Exception:
         pass
