@@ -171,9 +171,10 @@ def _msi_packet(text):
     body = body.replace(b'\x5b', b'\x5b\x02').replace(b'\x5a', b'\x5b\x01')
     return b'\x00' + (b'\x5a' + body + b'\x5a').ljust(1024, b'\x00')   # report ID 0 + report
 
-def msi_show_usb_frames():
+def msi_show_usb_frames(on=True):
     """After power-on the MSI screen plays its built-in animation and ignores frames until it gets
-    "conn" and "extendedDisplay" on its HID interface, as MSI's own service sends them."""
+    "conn" and "extendedDisplay" on its HID interface, as MSI's own service sends them.
+    on=False switches back to the animation; otherwise a reboot leaves the last frame frozen."""
     for name in os.listdir('/sys/class/hidraw'):
         with open(f'/sys/class/hidraw/{name}/device/uevent') as f:
             if 'HID_ID=0003:00000DB0:00007881' in f.read():
@@ -186,7 +187,7 @@ def msi_show_usb_frames():
         os.write(fd, _msi_packet(conn))
         os.write(fd, _msi_packet(conn))
         select.select([fd], [], [], 1.0)            # wait for the reply, like MSI's service
-        body = '{"enable":true}'
+        body = '{"enable":true}' if on else '{"enable":false}'
         os.write(fd, _msi_packet('POST extendedDisplay 1\r\nSeqNumber=110\r\nContentType=json\r\n'
                                  f'ContentLength={len(body)}\r\n\r\n{body}'))
     finally:
@@ -1165,6 +1166,10 @@ def mode_test(disp, quality):
 def handle_sigterm(signum, frame):
     log("SIGTERM, shutting down...")
     cleanup_children()
+    try:
+        msi_show_usb_frames(False)          # MSI Lightning Z only; no-op for other displays
+    except OSError:
+        pass
     for f in [PIDFILE, STATEFILE]:
         try:
             os.unlink(f)
